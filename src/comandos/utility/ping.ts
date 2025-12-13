@@ -1,4 +1,4 @@
-﻿import logger from '../../lib/logger.js';
+﻿﻿﻿import logger from '../../lib/logger.js';
 import { EMOJIS } from '../../config/constants.js';
 import { bold, bulletList, joinSections, section } from '../../utils/message-builder.js';
 import { reply } from '../../utils/reply.js';
@@ -33,7 +33,7 @@ export default {
       await reply(sock, msg, joinSections([header, body]));
       await msg.react(EMOJIS.SUCCESS);
 
-      // logger.info(`${EMOJIS.SUCCESS} Ping respondido en ${latency}ms`);
+      logger.info(`${EMOJIS.SUCCESS} Ping respondido en ${latency}ms`);
     } catch (error) {
       logger.error(`${EMOJIS.ERROR} Error en ping: ${error.message}`);
       await msg.react(EMOJIS.ERROR);

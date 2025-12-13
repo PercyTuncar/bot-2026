@@ -1,4 +1,4 @@
-﻿﻿import { getAllCommands, getCommandsByCategory, getCommand } from '../../core/command-loader.js';
+﻿﻿﻿import { getAllCommands, getCommandsByCategory, getCommand } from '../../core/command-loader.js';
 import { PERMISSION_LEVELS } from '../../config/constants.js';
 import { bold, italic, codeInline, bulletList, section, joinSections } from '../../utils/message-builder.js';
 import { reply } from '../../utils/reply.js';
