@@ -11,12 +11,36 @@ const { MessageMedia } = pkg;
 
 export class WelcomeService {
   /**
+   * Helper: Obtiene el nombre del contacto con reintentos
+   * Útil cuando un usuario recién se une y WhatsApp aún no ha propagado los datos
+   */
+  static async getContactNameWithRetries(sock, waId, retries = 5, delayMs = 500) {
+    const sleep = (ms) => new Promise(res => setTimeout(res, ms));
+    
+    for (let i = 0; i < retries; i++) {
+      try {
+        const contact = await sock.getContactById(waId);
+        if (contact) {
+          const name = contact.pushname || contact.name || contact.shortName;
+          if (name && name.trim().length > 0) {
+            return { name: name.trim(), contact };
+          }
+        }
+      } catch (err) {
+        // Ignorar errores temporales
+      }
+      await sleep(delayMs);
+    }
+    return null;
+  }
+
+  /**
    * Envía mensaje de bienvenida con mención real cliqueable
    * 
    * IMPORTANTE: Para que una mención sea cliqueable en WhatsApp:
    * 1. El cuerpo del mensaje debe contener @[id.user] (número o LID sin sufijo)
-   * 2. El array mentions debe contener el objeto Contact completo
-   * 3. WhatsApp renderiza @[numero] como @[nombre] automáticamente
+   * 2. El array mentions debe contener strings (IDs) - NO objetos Contact
+   * 3. WhatsApp renderiza @[numero] como @[nombre] automáticamente si tiene los datos
    */
   static async sendWelcome(sock, groupId, phone, displayName, memberCount = null, contactObject = null) {
     try {
@@ -30,7 +54,7 @@ export class WelcomeService {
 
       const group = await GroupRepository.getById(groupId);
 
-      // Use provided count or fallback to DB count (which might be lower due to lazy registration)
+      // Use provided count or fallback to DB count
       let count = memberCount;
       if (!count) {
         const members = await MemberRepository.getActiveMembers(groupId);
@@ -38,157 +62,71 @@ export class WelcomeService {
       }
 
       const targetJid = groupId.includes('@') ? groupId : `${groupId}@g.us`;
-
-      // ============================================================
-      // CRITICAL FIX: Construcción correcta de menciones para whatsapp-web.js
-      // ============================================================
-      // Para que la mención sea cliqueable y envíe notificación:
-      // 1. El texto debe contener "@" + id.user (ej: @5491112345678 o @184980080701681)
-      // 2. El array mentions debe contener IDs serializados (Strings) y NO objetos Contact
-      // 3. WhatsApp automáticamente renderiza @numero como @NombreDelUsuario
-      
       const isLid = phone.includes('@lid');
       
-      // Obtener el objeto Contact si no se proporcionó
-      // CRITICAL: Siempre intentar obtener el contacto si no tiene nombre
-      // Esto asegura que tengamos el nombre más actualizado (re-hidratación)
+      // Construir el ID completo para búsquedas
+      const waId = isLid ? phone : (phone.includes('@') ? phone : `${phone}@c.us`);
+
+      // ============================================================
+      // ESTRATEGIA DE REHIDRATACIÓN: Intentar obtener el nombre REAL
+      // ============================================================
+      // Cuando alguien entra, a veces getContactById no trae el pushname inmediatamente.
+      // Hacemos un pequeño esfuerzo de reintentos antes de enviar la bienvenida.
+      
       let contact = contactObject;
+      let realUserName = null;
+      
+      // Si no tenemos contacto o nombre, intentamos buscarlo con retries
       if (!contact || (!contact.pushname && !contact.name)) {
-        try {
-          // Intentar obtener contacto fresco
-          const freshContact = await sock.getContactById(phone);
-          if (freshContact) {
-             contact = freshContact;
-             logger.debug(`Contact retrieved/refreshed for ${phone}: pushname=${contact?.pushname}, name=${contact?.name}`);
-          }
-        } catch (err) {
-          logger.debug(`Could not get contact for ${phone}: ${err.message}`);
+        logger.debug(`🕵️ Buscando nombre para ${waId} con reintentos...`);
+        const found = await this.getContactNameWithRetries(sock, waId);
+        if (found) {
+          contact = found.contact;
+          realUserName = found.name;
+          logger.info(`✅ Nombre encontrado tras reintentos: "${realUserName}"`);
+        } else {
+          logger.debug(`⚠️ No se pudo obtener nombre tras reintentos para ${waId}`);
         }
+      } else {
+        // Ya teníamos contacto válido
+        realUserName = contact.pushname || contact.name || contact.shortName;
       }
+
+      // Fallback al displayName proporcionado por el evento si no encontramos nada mejor
+      if (!realUserName && displayName) {
+        realUserName = displayName;
+      }
+      
+      const safeDisplayName = realUserName || 'Usuario';
       
       // ============================================================
-      // Extraer el nombre REAL del usuario desde el Contact de WhatsApp
-      // Prioridad: pushname > name > shortName > displayName proporcionado
-      // pushname es el nombre que el usuario configuró en su WhatsApp
+      // PREPARAR VARIABLES PARA EL MENSAJE
       // ============================================================
       
-      // Función helper para validar que un nombre sea real (no números/LID)
-      const isValidDisplayName = (name: string | null | undefined): boolean => {
-        if (!name || typeof name !== 'string') return false;
-        const trimmed = name.trim();
-        if (!trimmed) return false;
-        // Debe contener al menos una letra (evitar números/LIDs)
-        return /[a-zA-ZáéíóúñÁÉÍÓÚÑ]/.test(trimmed);
-      };
-      
-      // Intentar obtener nombre del Contact
-      let realUserName: string | null = null;
-      
-      // Fuente 1: Contact object (pushname es el nombre configurado por el usuario)
-      if (contact) {
-        if (isValidDisplayName(contact.pushname)) {
-          realUserName = contact.pushname.trim();
-          logger.debug(`✅ Name from contact.pushname: "${realUserName}"`);
-        } else if (isValidDisplayName(contact.name)) {
-          realUserName = contact.name.trim();
-          logger.debug(`✅ Name from contact.name: "${realUserName}"`);
-        } else if (isValidDisplayName(contact.shortName)) {
-          realUserName = contact.shortName.trim();
-          logger.debug(`✅ Name from contact.shortName: "${realUserName}"`);
-        }
-      }
-      
-      // Fuente 2: displayName proporcionado (ya validado en event-handler)
-      if (!realUserName && isValidDisplayName(displayName)) {
-        realUserName = displayName.trim();
-        logger.debug(`✅ Name from provided displayName: "${realUserName}"`);
-      }
-      
-      // Si no encontramos nombre válido, dejar null (no mostrar nombre en imagen)
-      const safeDisplayName = realUserName || null;
-      
-      logger.info(`👤 User name resolution: contact.pushname="${contact?.pushname}", contact.name="${contact?.name}", displayName="${displayName}", final="${safeDisplayName}"`);
-      
-      // Extraer el ID del usuario para el texto del mensaje
-      // Para LIDs: extraer la parte numérica antes del :
-      // Para números: usar el número sin sufijo
+      // 1. mentionIdForText: El número puro para poner en el texto (ej: 51954944278)
       let mentionIdForText;
       if (isLid) {
-        // LID format: 184980080701681@lid - usar tal cual sin @lid
-        mentionIdForText = phone.replace('@lid', '');
+        mentionIdForText = phone.replace('@lid', '').split(':')[0];
       } else {
-        // Phone format: 5491112345678@c.us o @s.whatsapp.net
         mentionIdForText = phone.replace('@c.us', '').replace('@s.whatsapp.net', '');
       }
       
-      // El texto de mención debe ser @[id] para que WhatsApp lo vincule
-      // WhatsApp renderizará esto como @NombreDelUsuario automáticamente
-      const mentionText = `@${mentionIdForText}`;
-      
-      // Si tenemos un nombre real (pushname) y no es solo el número, 
-      // usaremos el nombre directamente para una mejor experiencia visual si la mención falla
-      // PERO mantenemos mentionText para la variable {user} que se usa para etiquetar
-      const displayNameForMsg = realUserName || mentionText;
-      
-      logger.info(`📝 Mention construction: phone=${phone}, idForText=${mentionIdForText}, hasContact=${!!contact}, displayNameForMsg=${displayNameForMsg}`);
-
-
-
-      // Intentar generar y enviar imagen de bienvenida
-      let imageBuffer: Buffer | null = null;
-      logger.info(`🖼️ Welcome image check: envConfig.welcomeImages=${envConfig.features?.welcomeImages}, groupConfig.welcomeImages=${groupConfig.features?.welcomeImages}, cloudinaryUrl=${envConfig.cloudinary?.welcomeBgUrl ? 'SET' : 'NOT SET'}`);
-      
-      if (envConfig.features?.welcomeImages && groupConfig.features?.welcomeImages !== false) {
-        try {
-          // Verificar que tengamos la configuración necesaria
-          if (!envConfig.cloudinary?.welcomeBgUrl) {
-            logger.warn('Welcome images enabled but no background URL configured in WELCOME_BG_URL');
-          } else {
-            // Obtener URL del avatar del usuario
-            const profilePicUrl = await sock.getProfilePicUrl(phone).catch((err) => {
-              logger.debug(`No profile pic for ${phone}: ${err.message}`);
-              return null;
-            });
-
-            // El servicio ahora retorna un Buffer directamente
-            imageBuffer = await WelcomeImageService.generateWelcomeImage(
-              profilePicUrl || '',
-              safeDisplayName,
-              group?.name || 'el grupo'
-            );
-
-            if (!imageBuffer) {
-              logger.warn('WelcomeImageService returned null - check logs for generation errors');
-            }
-          }
-        } catch (error) {
-          logger.error(`Error generating welcome image:`, error);
-        }
-      } else {
-        logger.debug('Welcome images disabled or not configured');
-      }
-
-      // ============================================================
-      // FIX DEFINITIVO (v1.34.3+): Menciones solo por ID string
-      // ============================================================
-      // 1. El texto DEBE ser @numero (ej: @51954944278)
-      // 2. mentions debe ser array de strings (IDs)
-      // 3. NO usar objetos Contact (deprecated)
-      // 4. NO usar @Nombre en el texto (no es cliqueable)
-      // ============================================================
-      
-      const mentions = [];
-      // Construir el ID serializado correcto
+      // 2. mentionId: El JID completo para el array de mentions
       const mentionId = contact && contact.id && contact.id._serialized 
           ? contact.id._serialized 
-          : (isLid ? phone : `${phone.replace('@c.us', '')}@c.us`);
+          : waId;
           
-      mentions.push(mentionId);
-      
-      // La variable {user} SIEMPRE debe ser @numero para que sea mención válida
+      // 3. userMentionText: SIEMPRE @numero para que sea mención técnica válida
       const userMentionText = `@${mentionIdForText}`;
+      
+      // 4. displayNameForMsg: El nombre bonito para leer (texto plano)
+      const displayNameForMsg = realUserName || mentionIdForText;
 
-      logger.info(`📝 Mention construction: phone=${phone}, idForText=${mentionIdForText}, mentionId=${mentionId}, userMentionText=${userMentionText}`);
+      logger.info(`📝 Mention data: mentionId=${mentionId}, userMentionText=${userMentionText}, displayNameForMsg=${displayNameForMsg}`);
+
+      // ============================================================
+      // GENERAR MENSAJE
+      // ============================================================
 
       let message = replacePlaceholders(groupConfig.welcome.message, {
         user: userMentionText, // @519... (Mención real cliqueable)
@@ -197,16 +135,34 @@ export class WelcomeService {
         count: count
       });
 
-      // Ensure message is not empty (redundant check but safe)
       if (!message || message.trim() === '') {
         message = `¡Bienvenido ${userMentionText} al grupo!`;
       }
 
-      logger.info(`📤 Sending welcome: message="${message.substring(0, 50)}...", mentions=${JSON.stringify(mentions.map(m => m.id ? m.id._serialized : m))}`);
+      const mentions = [mentionId];
+
+      // ============================================================
+      // ENVIAR (IMAGEN O TEXTO)
+      // ============================================================
+
+      let imageBuffer: Buffer | null = null;
+      if (envConfig.features?.welcomeImages && groupConfig.features?.welcomeImages !== false) {
+        try {
+          if (envConfig.cloudinary?.welcomeBgUrl) {
+            const profilePicUrl = await sock.getProfilePicUrl(waId).catch(() => null);
+            imageBuffer = await WelcomeImageService.generateWelcomeImage(
+              profilePicUrl || '',
+              safeDisplayName, // Usar nombre real en la imagen
+              group?.name || 'el grupo'
+            );
+          }
+        } catch (error) {
+          logger.error(`Error generating welcome image:`, error);
+        }
+      }
 
       if (imageBuffer) {
         try {
-          // Crear MessageMedia desde Buffer (base64)
           const base64Image = imageBuffer.toString('base64');
           const media = new MessageMedia('image/png', base64Image, 'welcome.png');
           
@@ -214,7 +170,7 @@ export class WelcomeService {
             caption: message,
             mentions: mentions
           });
-          logger.info(`✅ Imagen de bienvenida enviada`);
+          logger.info(`✅ Imagen de bienvenida enviada a ${safeDisplayName}`);
         } catch (error) {
           logger.warn(`Error al enviar imagen, enviando solo texto:`, error);
           await sock.sendMessage(targetJid, message, { mentions: mentions });
@@ -223,7 +179,6 @@ export class WelcomeService {
         await sock.sendMessage(targetJid, message, { mentions: mentions });
       }
 
-      logger.info(`✅ Bienvenida enviada a ${safeDisplayName} (${phone}) en grupo ${groupId}`);
       return message;
     } catch (error) {
       logger.error(`Error al enviar bienvenida:`, error);
