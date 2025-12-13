@@ -168,12 +168,13 @@ export class WelcomeService {
       }
 
       // ============================================================
-      // CRITICAL: El array mentions debe contener el objeto Contact
-      // Si no tenemos el Contact, pasamos el ID serializado como fallback
+      // CRITICAL: El array mentions debe contener IDs serializados
+      // La librería whatsapp-web.js ha deprecado pasar objetos Contact
       // ============================================================
-      const mentions = contact ? [contact] : [phone];
+      // Si contact existe, extraemos su ID serializado. Si no, usamos el phone directamente.
+      const mentions = contact ? [contact.id._serialized] : [phone];
       
-      logger.info(`📤 Sending welcome: message="${message.substring(0, 50)}...", mentions=${JSON.stringify(mentions.map(m => typeof m === 'string' ? m : m.id?._serialized || m.id))}`);
+      logger.info(`📤 Sending welcome: message="${message.substring(0, 50)}...", mentions=${JSON.stringify(mentions)}`);
 
       if (imageBuffer) {
         try {
