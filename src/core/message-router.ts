@@ -28,7 +28,7 @@ export class MessageRouter {
     const rawGroupId = isGroup ? (chat?.id?._serialized || msg.from) : null;
     const groupId = rawGroupId ? normalizeGroupId(rawGroupId) : null;
 
-    logger.info(`isGroup=${isGroup}, groupId=${groupId || 'null'}, rawId=${rawGroupId || msg.from}`);
+    // logger.info(`isGroup=${isGroup}, groupId=${groupId || 'null'}, rawId=${rawGroupId || msg.from}`);
 
     const isDM = !isGroup;
     const isCommand = this.isCommand(text);
