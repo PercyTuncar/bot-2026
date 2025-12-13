@@ -44,17 +44,23 @@ export class WelcomeService {
       // ============================================================
       // Para que la mención sea cliqueable y envíe notificación:
       // 1. El texto debe contener "@" + id.user (ej: @5491112345678 o @184980080701681)
-      // 2. El array mentions debe contener el objeto Contact completo
+      // 2. El array mentions debe contener IDs serializados (Strings) y NO objetos Contact
       // 3. WhatsApp automáticamente renderiza @numero como @NombreDelUsuario
       
       const isLid = phone.includes('@lid');
       
       // Obtener el objeto Contact si no se proporcionó
+      // CRITICAL: Siempre intentar obtener el contacto si no tiene nombre
+      // Esto asegura que tengamos el nombre más actualizado (re-hidratación)
       let contact = contactObject;
-      if (!contact) {
+      if (!contact || (!contact.pushname && !contact.name)) {
         try {
-          contact = await sock.getContactById(phone);
-          logger.debug(`Contact retrieved for ${phone}: pushname=${contact?.pushname}, name=${contact?.name}, shortName=${contact?.shortName}`);
+          // Intentar obtener contacto fresco
+          const freshContact = await sock.getContactById(phone);
+          if (freshContact) {
+             contact = freshContact;
+             logger.debug(`Contact retrieved/refreshed for ${phone}: pushname=${contact?.pushname}, name=${contact?.name}`);
+          }
         } catch (err) {
           logger.debug(`Could not get contact for ${phone}: ${err.message}`);
         }
