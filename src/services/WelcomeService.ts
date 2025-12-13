@@ -75,17 +75,47 @@ export class WelcomeService {
       
       let contact = contactObject;
       let realUserName = null;
+      let resolvedPhoneJid = null; // Para almacenar el JID de teléfono si es un LID
       
       // Si no tenemos contacto o nombre, intentamos buscarlo con retries
-      if (!contact || (!contact.pushname && !contact.name)) {
+      if (!contact || (!contact.pushname && !contact.name) || isLid) {
         logger.debug(`🕵️ Buscando nombre para ${waId} con reintentos...`);
-        const found = await this.getContactNameWithRetries(sock, waId);
-        if (found) {
-          contact = found.contact;
-          realUserName = found.name;
-          logger.info(`✅ Nombre encontrado tras reintentos: "${realUserName}"`);
+        
+        // Si es LID, intentamos obtener el contacto para ver si tiene el número real o linkedContactId
+        if (isLid) {
+             const found = await this.getContactNameWithRetries(sock, waId);
+             if (found && found.contact) {
+                 contact = found.contact;
+                 realUserName = found.name;
+                 
+                 // Intentar obtener el Phone JID asociado si es un LID
+                 // A veces el contacto de un LID tiene la propiedad linkedContactId o number
+                 if (contact.linkedContactId) {
+                     logger.info(`🔗 Found linked contact for LID: ${contact.linkedContactId}`);
+                     // Intentar obtener el contacto del teléfono vinculado para asegurar el nombre
+                     const linkedContact = await sock.getContactById(contact.linkedContactId);
+                     if (linkedContact) {
+                         contact = linkedContact; // Usar el contacto del teléfono
+                         resolvedPhoneJid = contact.id._serialized;
+                         realUserName = contact.pushname || contact.name || realUserName; // Actualizar nombre si es mejor
+                     }
+                 } else if (contact.number) {
+                     // Si el contacto del LID tiene un número de teléfono válido
+                     const possiblePhone = contact.number; // e.g., 549...
+                     // Validar si parece un número de teléfono
+                     if (/^\d+$/.test(possiblePhone) && possiblePhone.length < 18) {
+                        resolvedPhoneJid = `${possiblePhone}@c.us`;
+                     }
+                 }
+             }
         } else {
-          logger.debug(`⚠️ No se pudo obtener nombre tras reintentos para ${waId}`);
+            // No es LID, flujo normal
+            const found = await this.getContactNameWithRetries(sock, waId);
+            if (found) {
+              contact = found.contact;
+              realUserName = found.name;
+              logger.info(`✅ Nombre encontrado tras reintentos: "${realUserName}"`);
+            }
         }
       } else {
         // Ya teníamos contacto válido
@@ -103,41 +133,35 @@ export class WelcomeService {
       // PREPARAR VARIABLES PARA EL MENSAJE
       // ============================================================
       
-      // 1. mentionIdForText: El número puro para poner en el texto (ej: 51954944278)
-      let mentionIdForText;
-      if (isLid) {
-        mentionIdForText = phone.replace('@lid', '').split(':')[0];
+      // 1. Determine the JID to use for the mention (Prefer Phone JID over LID)
+      // Si logramos resolver un Phone JID desde el LID, lo usamos.
+      // Si no, usamos el waId original (que puede ser Phone o LID).
+      const finalMentionJid = resolvedPhoneJid || (!isLid ? waId : waId); 
+      
+      // 2. Extract number for text display (clean number)
+      let cleanNumberForText;
+      if (finalMentionJid.includes('@lid')) {
+          cleanNumberForText = finalMentionJid.replace('@lid', '').split(':')[0];
       } else {
-        mentionIdForText = phone.replace('@c.us', '').replace('@s.whatsapp.net', '');
+          cleanNumberForText = finalMentionJid.replace('@c.us', '').replace('@s.whatsapp.net', '');
       }
-      
-      // 2. mentionId: El JID completo para el array de mentions
-      const mentionId = contact && contact.id && contact.id._serialized 
-          ? contact.id._serialized 
-          : waId;
-          
-      // ============================================================
-      // FIX VISUAL: Priorizar Nombre sobre Número en la variable {user}
-      // ============================================================
-      // El usuario reporta que ver "@123456" es indeseable.
-      // Aunque técnicamente "@numero" es lo más robusto para crear el enlace,
-      // si tenemos el nombre real (pushname), intentaremos usarlo: "@Pepito".
-      // Enviamos el ID en 'mentions' y esperamos que WhatsApp haga la magia de vincularlos
-      // o al menos muestre el nombre legible que es la prioridad del usuario.
-      
-      const userMentionText = realUserName ? `@${realUserName}` : `@${mentionIdForText}`;
+
+      // 3. userMentionText: Use @Number (Phone JID preferred) for the text tag.
+      // Even if it's a LID, using the number part is better than nothing, 
+      // but ideally we swapped it to the Phone JID above.
+      const userMentionText = `@${cleanNumberForText}`;
       
       // 4. displayNameForMsg: El nombre bonito para leer (texto plano)
-      const displayNameForMsg = realUserName || mentionIdForText;
- 
-      logger.info(`📝 Mention data: mentionId=${mentionId}, userMentionText=${userMentionText}, displayNameForMsg=${displayNameForMsg}`);
+      const displayNameForMsg = realUserName || cleanNumberForText;
+
+      logger.info(`📝 Mention data: finalMentionJid=${finalMentionJid}, userMentionText=${userMentionText}, displayNameForMsg=${displayNameForMsg}`);
 
       // ============================================================
       // GENERAR MENSAJE
       // ============================================================
 
       let message = replacePlaceholders(groupConfig.welcome.message, {
-        user: userMentionText, // @519... (Mención real cliqueable)
+        user: userMentionText, // @519... (Mención real cliqueable, preferiblemente Phone JID)
         name: displayNameForMsg, // Nombre real (texto plano, no cliqueable)
         group: group?.name || 'el grupo',
         count: count
@@ -147,7 +171,8 @@ export class WelcomeService {
         message = `¡Bienvenido ${userMentionText} al grupo!`;
       }
 
-      const mentions = [mentionId];
+      // Use the resolved JID for the mentions array
+      const mentions = [finalMentionJid];
 
       // ============================================================
       // ENVIAR (IMAGEN O TEXTO)
