@@ -116,12 +116,20 @@ export class WelcomeService {
           ? contact.id._serialized 
           : waId;
           
-      // 3. userMentionText: SIEMPRE @numero para que sea mención técnica válida
-      const userMentionText = `@${mentionIdForText}`;
+      // ============================================================
+      // FIX VISUAL: Priorizar Nombre sobre Número en la variable {user}
+      // ============================================================
+      // El usuario reporta que ver "@123456" es indeseable.
+      // Aunque técnicamente "@numero" es lo más robusto para crear el enlace,
+      // si tenemos el nombre real (pushname), intentaremos usarlo: "@Pepito".
+      // Enviamos el ID en 'mentions' y esperamos que WhatsApp haga la magia de vincularlos
+      // o al menos muestre el nombre legible que es la prioridad del usuario.
+      
+      const userMentionText = realUserName ? `@${realUserName}` : `@${mentionIdForText}`;
       
       // 4. displayNameForMsg: El nombre bonito para leer (texto plano)
       const displayNameForMsg = realUserName || mentionIdForText;
-
+ 
       logger.info(`📝 Mention data: mentionId=${mentionId}, userMentionText=${userMentionText}, displayNameForMsg=${displayNameForMsg}`);
 
       // ============================================================
