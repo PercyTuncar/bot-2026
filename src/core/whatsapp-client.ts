@@ -17,13 +17,16 @@ export class WhatsAppClient {
         }),
         puppeteer: {
           headless: true,
+          executablePath: process.env.CHROME_BIN || undefined, // Allow override
           args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
             '--disable-dev-shm-usage',
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
-            '--disable-gpu'
+            '--disable-gpu',
+            '--single-process', // Important for some containerized environments
+            '--no-zygote'       // Helps in resource constrained environments
           ]
         }
       });
