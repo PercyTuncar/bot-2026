@@ -15,13 +15,11 @@ module.exports = {
         NODE_ENV: 'production',
         ...process.env
       },
-      error_file: './logs/pm2-error.log',
-      out_file: './logs/pm2-out.log',
-      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
-      merge_logs: true,
-      time: true,
       // Usar formato crudo para que el QR conserve saltos de línea
-      log_type: 'raw',
+      log_type: 'raw', 
+      // Formato de fecha legible
+      time: false, // Desactivamos el timestamp automático de PM2 para evitar que rompa el QR
+      log_date_format: 'YYYY-MM-DD HH:mm:ss',
       ignore_watch: ['node_modules', '.wwebjs_auth', '.wwebjs_cache', 'logs', 'temp'],
       // Desactivar monitoreo de recursos para evitar errores de wmic en Windows
       pmx: false,
