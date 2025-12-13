@@ -125,11 +125,16 @@ export class WelcomeService {
       // WhatsApp renderizará esto como @NombreDelUsuario automáticamente
       const mentionText = `@${mentionIdForText}`;
       
-      logger.info(`📝 Mention construction: phone=${phone}, idForText=${mentionIdForText}, hasContact=${!!contact}`);
+      // Si tenemos un nombre real (pushname) y no es solo el número, 
+      // usaremos el nombre directamente para una mejor experiencia visual si la mención falla
+      // PERO mantenemos mentionText para la variable {user} que se usa para etiquetar
+      const displayNameForMsg = realUserName || mentionText;
+      
+      logger.info(`📝 Mention construction: phone=${phone}, idForText=${mentionIdForText}, hasContact=${!!contact}, displayNameForMsg=${displayNameForMsg}`);
 
       let message = replacePlaceholders(groupConfig.welcome.message, {
-        user: mentionText, // Mención cliqueable: @ID que WhatsApp renderiza como @Nombre
-        name: mentionText, // Mantener compatibilidad con mensajes antiguos que usan {name}
+        user: mentionText, // Mención cliqueable: @ID (WhatsApp lo transforma a @Nombre)
+        name: displayNameForMsg, // Nombre real legible (texto plano si no hay mención)
         group: group?.name || 'el grupo',
         count: count
       });
