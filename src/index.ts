@@ -47,18 +47,18 @@ async function main() {
       await eventHandler.handleMessage(msg);
     });
 
-    // DEBUG: Loggear TODOS los eventos para detectar cuáles se disparan
-    const allEvents = ['group_join', 'group_leave', 'group_update', 'group_admin_changed', 
-                       'group_membership_request', 'contact_changed', 'chat_removed',
-                       'chat_archived', 'chat_unarchived', 'unread_count', 'media_uploaded'];
-    for (const eventName of allEvents) {
+    // DEBUG: Loggear eventos relevantes (Filtrado para evitar spam ilegible)
+    const importantEvents = ['group_join', 'group_leave']; 
+    for (const eventName of importantEvents) {
       client.on(eventName, (...args) => {
-        logger.info(`[DEBUG EVENT] ${eventName}: ${JSON.stringify(args)}`);
+        // Log simplificado
+        logger.info(`[EVENT] ${eventName}: ${args.length} args received`);
       });
     }
 
     client.on('group_participants_update', async (update) => {
-      logger.info(`[RAW EVENT] group_participants_update: ${JSON.stringify(update)}`);
+      // Log simplificado
+      logger.info(`[EVENT] group_participants_update: ${update.action} on ${update.id?._serialized || 'unknown'}`);
       await eventHandler.handleGroupParticipantsUpdate(update);
     });
 
@@ -82,9 +82,26 @@ async function main() {
     // Auto-sync: Actualizar metadatos cuando cambia el grupo
     client.on('group_update', async (update) => {
       try {
-        logger.info(`[GROUP_UPDATE] Grupo ${update.id._serialized} actualizado`);
-        const groupId = normalizeGroupId(update.id._serialized);
-        const chat = await client.getChatById(update.id._serialized);
+        const chatId = update.id?._serialized || update.chatId;
+        if (!chatId) return;
+
+        logger.info(`[GROUP_UPDATE] Grupo ${chatId} actualizado`);
+        const groupId = normalizeGroupId(chatId);
+        
+        let chat;
+        try {
+           chat = await client.getChatById(chatId);
+        } catch (err) {
+           // Si falla getChatById (común en group_update temprano), intentar esperar un poco
+           logger.warn(`[GROUP_UPDATE] getChatById falló, reintentando en 1s...`);
+           await new Promise(r => setTimeout(r, 1000));
+           try {
+              chat = await client.getChatById(chatId);
+           } catch (err2) {
+              logger.error(`[GROUP_UPDATE] No se pudo obtener el chat tras reintento: ${err2.message}`);
+              return;
+           }
+        }
 
         const metadata = await GroupService.extractCompleteMetadata(chat);
         await GroupRepository.update(groupId, {
