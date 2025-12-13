@@ -169,30 +169,30 @@ export class WelcomeService {
       }
 
       // ============================================================
-      // FIX: Seguir la recomendación de usar el objeto Contact en mentions
-      // para asegurar que la etiqueta visual sea correcta (@Nombre)
-      // aunque pueda generar warnings de deprecación en versiones recientes.
-      // El usuario reporta que usar IDs strings no está renderizando el nombre.
+      // FIX DEFINITIVO (v1.34.3+): Menciones solo por ID string
+      // ============================================================
+      // 1. El texto DEBE ser @numero (ej: @51954944278)
+      // 2. mentions debe ser array de strings (IDs)
+      // 3. NO usar objetos Contact (deprecated)
+      // 4. NO usar @Nombre en el texto (no es cliqueable)
       // ============================================================
       
       const mentions = [];
-      if (contact) {
-        mentions.push(contact);
-      } else {
-        // Fallback a ID string si no hay objeto contacto
-        const mentionId = isLid ? phone : `${phone.replace('@c.us', '')}@c.us`;
-        mentions.push(mentionId);
-      }
+      // Construir el ID serializado correcto
+      const mentionId = contact && contact.id && contact.id._serialized 
+          ? contact.id._serialized 
+          : (isLid ? phone : `${phone.replace('@c.us', '')}@c.us`);
+          
+      mentions.push(mentionId);
       
-      // Ajustar la variable {user} para usar @Nombre si es posible,
-      // coincidiendo con la lógica de usar el objeto contact en mentions.
-      const userMentionText = realUserName ? `@${realUserName}` : mentionText;
+      // La variable {user} SIEMPRE debe ser @numero para que sea mención válida
+      const userMentionText = `@${mentionIdForText}`;
 
-      logger.info(`📝 Mention construction: phone=${phone}, idForText=${mentionIdForText}, hasContact=${!!contact}, displayNameForMsg=${displayNameForMsg}, userMentionText=${userMentionText}`);
+      logger.info(`📝 Mention construction: phone=${phone}, idForText=${mentionIdForText}, mentionId=${mentionId}, userMentionText=${userMentionText}`);
 
       let message = replacePlaceholders(groupConfig.welcome.message, {
-        user: userMentionText, // @Nombre (si existe) o @ID
-        name: displayNameForMsg, // Nombre real legible
+        user: userMentionText, // @519... (Mención real cliqueable)
+        name: displayNameForMsg, // Nombre real (texto plano, no cliqueable)
         group: group?.name || 'el grupo',
         count: count
       });
