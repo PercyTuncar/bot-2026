@@ -1,0 +1,23 @@
+﻿export default {
+  name: 'ytmusic',
+  description: 'Descargar audio de YouTube',
+  category: 'premium',
+  permissions: 'user',
+  scope: 'group',
+  purchaseRequired: true,  // Requiere comprar el comando primero
+  cooldown: 60,
+
+  async execute({ sock, args, member, replyJid }) {
+    const url = args[0];
+    if (!url) {
+      await sock.sendMessage(replyJid, '❌ Debes proporcionar una URL de YouTube');
+      return;
+    }
+
+    await sock.sendMessage(replyJid,
+      `🎧 Descargando audio... (Tienes ${member?.points || 0} puntos)\n\n` +
+      '⚠️ Esta funcionalidad está en desarrollo'
+    );
+  }
+};
+

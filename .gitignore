@@ -1,0 +1,10 @@
+node_modules/
+.env
+.wwebjs_auth/
+.wwebjs_cache/
+logs/
+temp/
+*.log
+firebase-credentials.json
+.DS_Store
+
