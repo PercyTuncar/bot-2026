@@ -1,3 +1,18 @@
+// ============================================================
+// INFRASTRUCTURE FIX: Corregir error "spawn wmic ENOENT" en Windows
+// Este error ocurre porque pidusage (usado por PM2) necesita wmic.exe
+// pero el PATH a veces no incluye C:\Windows\System32\wbem
+// ============================================================
+import { platform } from 'os';
+if (platform() === 'win32') {
+  const currentPath = process.env.PATH || '';
+  const wbemPath = 'C:\\Windows\\System32\\wbem';
+  if (!currentPath.toLowerCase().includes(wbemPath.toLowerCase())) {
+    process.env.PATH = `${currentPath};${wbemPath}`;
+    console.log('✅ [Infrastructure] Injected wbem to PATH to fix wmic/pidusage error');
+  }
+}
+
 import { initializeFirebase } from './config/firebase.js';
 import { loadCommands } from './core/command-loader.js';
 import WhatsAppClient from './core/whatsapp-client.js';
@@ -91,14 +106,17 @@ async function main() {
         let chat;
         try {
            chat = await client.getChatById(chatId);
-        } catch (err) {
-           // Si falla getChatById (común en group_update temprano), intentar esperar un poco
-           logger.warn(`[GROUP_UPDATE] getChatById falló, reintentando en 1s...`);
-           await new Promise(r => setTimeout(r, 1000));
+        } catch (err: any) {
+           // Si falla getChatById (común en groups >100 miembros o durante eventos tempranos)
+           // En grupos grandes, "Evaluation failed: t" es esperado debido a Lazy Loading
+           logger.warn(`[GROUP_UPDATE] getChatById falló: ${err.message}. Reintentando en 2s...`);
+           await new Promise(r => setTimeout(r, 2000));
            try {
               chat = await client.getChatById(chatId);
-           } catch (err2) {
-              logger.error(`[GROUP_UPDATE] No se pudo obtener el chat tras reintento: ${err2.message}`);
+           } catch (err2: any) {
+              // Si aún falla, es probablemente un grupo grande con Lazy Loading activo
+              // No es crítico - el evento se procesará cuando el usuario abra el grupo
+              logger.warn(`[GROUP_UPDATE] getChatById falló tras reintento (normal en grupos >100): ${err2.message}`);
               return;
            }
         }

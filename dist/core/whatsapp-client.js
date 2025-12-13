@@ -14,13 +14,16 @@ export class WhatsAppClient {
                 }),
                 puppeteer: {
                     headless: true,
+                    executablePath: process.env.CHROME_BIN || undefined,
                     args: [
                         '--no-sandbox',
                         '--disable-setuid-sandbox',
                         '--disable-dev-shm-usage',
                         '--disable-accelerated-2d-canvas',
                         '--no-first-run',
-                        '--disable-gpu'
+                        '--disable-gpu',
+                        '--single-process',
+                        '--no-zygote'
                     ]
                 }
             });

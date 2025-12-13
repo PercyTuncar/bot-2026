@@ -7,9 +7,114 @@ import logger from '../lib/logger.js';
 import pkg from 'whatsapp-web.js';
 const { MessageMedia } = pkg;
 export class WelcomeService {
+    static async getContactNameWithRetries(sock, waId, retries = 5, delayMs = 500) {
+        const sleep = (ms) => new Promise(res => setTimeout(res, ms));
+        for (let i = 0; i < retries; i++) {
+            try {
+                const contact = await sock.getContactById(waId);
+                if (contact) {
+                    const name = contact.pushname || contact.name || contact.shortName;
+                    if (name && name.trim().length > 0) {
+                        return { name: name.trim(), contact };
+                    }
+                }
+            }
+            catch (err) {
+            }
+            await sleep(delayMs);
+        }
+        return null;
+    }
+    static async getNameForMention(sock, jid) {
+        if (!sock?.pupPage)
+            return null;
+        try {
+            const result = await sock.pupPage.evaluate(async (participantJid) => {
+                try {
+                    const store = window.Store;
+                    if (!store)
+                        return null;
+                    const isValid = (n) => {
+                        if (!n || typeof n !== 'string')
+                            return false;
+                        const t = n.trim();
+                        return t.length > 0 && t !== 'undefined' && t.toLowerCase() !== 'null';
+                    };
+                    if (store.Contact) {
+                        const contact = store.Contact.get(participantJid);
+                        if (contact) {
+                            if (isValid(contact.pushname))
+                                return { name: contact.pushname, source: 'Contact.pushname' };
+                            if (isValid(contact.verifiedName))
+                                return { name: contact.verifiedName, source: 'Contact.verifiedName' };
+                            if (isValid(contact.notifyName))
+                                return { name: contact.notifyName, source: 'Contact.notifyName' };
+                        }
+                    }
+                    if (store.Chat) {
+                        const chat = store.Chat.get(participantJid);
+                        if (chat) {
+                            if (chat.contact) {
+                                if (isValid(chat.contact.pushname))
+                                    return { name: chat.contact.pushname, source: 'Chat.contact.pushname' };
+                                if (isValid(chat.contact.verifiedName))
+                                    return { name: chat.contact.verifiedName, source: 'Chat.contact.verifiedName' };
+                            }
+                            if (isValid(chat.name))
+                                return { name: chat.name, source: 'Chat.name' };
+                        }
+                    }
+                    if (store.GroupMetadata && store.GroupMetadata._index) {
+                        for (const [, groupMeta] of store.GroupMetadata._index) {
+                            if (groupMeta && groupMeta.participants) {
+                                for (const p of groupMeta.participants) {
+                                    const pId = p.id?._serialized || p.id;
+                                    if (pId === participantJid) {
+                                        if (isValid(p.pushname))
+                                            return { name: p.pushname, source: 'GroupMeta.pushname' };
+                                        if (isValid(p.notify))
+                                            return { name: p.notify, source: 'GroupMeta.notify' };
+                                        if (isValid(p.name))
+                                            return { name: p.name, source: 'GroupMeta.name' };
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (store.Msg && store.Msg._index) {
+                        for (const [, msg] of store.Msg._index) {
+                            const senderId = msg?.senderObj?.id?._serialized || msg?.sender?._serialized || msg?.from;
+                            if (senderId === participantJid) {
+                                if (isValid(msg.notifyName))
+                                    return { name: msg.notifyName, source: 'Msg.notifyName' };
+                                if (msg.senderObj && isValid(msg.senderObj.pushname)) {
+                                    return { name: msg.senderObj.pushname, source: 'Msg.senderObj.pushname' };
+                                }
+                            }
+                        }
+                    }
+                    return null;
+                }
+                catch (e) {
+                    return null;
+                }
+            }, jid);
+            if (result && result.name) {
+                logger.info(`✅ [getNameForMention] Nombre encontrado (${result.source}): "${result.name}"`);
+                return result.name;
+            }
+            return null;
+        }
+        catch (err) {
+            logger.debug(`[getNameForMention] Error: ${err.message}`);
+            return null;
+        }
+    }
     static async sendWelcome(sock, groupId, phone, displayName, memberCount = null, contactObject = null) {
+        const sleep = (ms) => new Promise(res => setTimeout(res, ms));
         try {
             logger.info(`👋 Processing welcome for ${phone} in ${groupId}`);
+            await sleep(2000);
             const groupConfig = await GroupRepository.getConfig(groupId);
             if (!groupConfig?.welcome?.enabled) {
                 logger.info(`ℹ️ Welcome disabled for group ${groupId}`);
@@ -23,97 +128,124 @@ export class WelcomeService {
             }
             const targetJid = groupId.includes('@') ? groupId : `${groupId}@g.us`;
             const isLid = phone.includes('@lid');
+            const waId = isLid ? phone : (phone.includes('@') ? phone : `${phone}@c.us`);
             let contact = contactObject;
-            if (!contact || (!contact.pushname && !contact.name)) {
+            let resolvedPhoneJid = null;
+            if (isLid) {
                 try {
-                    const freshContact = await sock.getContactById(phone);
-                    if (freshContact) {
-                        contact = freshContact;
-                        logger.debug(`Contact retrieved/refreshed for ${phone}: pushname=${contact?.pushname}, name=${contact?.name}`);
+                    const found = await this.getContactNameWithRetries(sock, waId, 3, 300);
+                    if (found && found.contact) {
+                        contact = found.contact;
+                        if (contact.linkedContactId) {
+                            resolvedPhoneJid = contact.linkedContactId;
+                        }
+                        else if (contact.number && /^\d+$/.test(contact.number)) {
+                            resolvedPhoneJid = `${contact.number}@c.us`;
+                        }
                     }
                 }
-                catch (err) {
-                    logger.debug(`Could not get contact for ${phone}: ${err.message}`);
-                }
+                catch (e) { }
             }
-            const isValidDisplayName = (name) => {
-                if (!name || typeof name !== 'string')
-                    return false;
-                const trimmed = name.trim();
-                if (!trimmed)
-                    return false;
-                return /[a-zA-ZáéíóúñÁÉÍÓÚÑ]/.test(trimmed);
-            };
-            let realUserName = null;
-            if (contact) {
-                if (isValidDisplayName(contact.pushname)) {
-                    realUserName = contact.pushname.trim();
-                    logger.debug(`✅ Name from contact.pushname: "${realUserName}"`);
-                }
-                else if (isValidDisplayName(contact.name)) {
-                    realUserName = contact.name.trim();
-                    logger.debug(`✅ Name from contact.name: "${realUserName}"`);
-                }
-                else if (isValidDisplayName(contact.shortName)) {
-                    realUserName = contact.shortName.trim();
-                    logger.debug(`✅ Name from contact.shortName: "${realUserName}"`);
-                }
-            }
-            if (!realUserName && isValidDisplayName(displayName)) {
-                realUserName = displayName.trim();
-                logger.debug(`✅ Name from provided displayName: "${realUserName}"`);
-            }
-            const safeDisplayName = realUserName || null;
-            logger.info(`👤 User name resolution: contact.pushname="${contact?.pushname}", contact.name="${contact?.name}", displayName="${displayName}", final="${safeDisplayName}"`);
-            let mentionIdForText;
-            if (isLid) {
-                mentionIdForText = phone.replace('@lid', '');
+            const finalMentionJid = resolvedPhoneJid || waId;
+            let cleanNumberForText;
+            if (finalMentionJid.includes('@lid')) {
+                cleanNumberForText = finalMentionJid.replace('@lid', '').split(':')[0];
             }
             else {
-                mentionIdForText = phone.replace('@c.us', '').replace('@s.whatsapp.net', '');
+                cleanNumberForText = finalMentionJid.replace('@c.us', '').replace('@s.whatsapp.net', '');
             }
-            const mentionText = `@${mentionIdForText}`;
-            const displayNameForMsg = realUserName || mentionText;
-            logger.info(`📝 Mention construction: phone=${phone}, idForText=${mentionIdForText}, hasContact=${!!contact}, displayNameForMsg=${displayNameForMsg}`);
+            const userMentionText = `@${cleanNumberForText}`;
+            let nameForDisplay = null;
+            const jidsToTry = [finalMentionJid];
+            if (finalMentionJid !== waId)
+                jidsToTry.push(waId);
+            if (cleanNumberForText && /^\d+$/.test(cleanNumberForText)) {
+                const phoneJid = `${cleanNumberForText}@c.us`;
+                if (!jidsToTry.includes(phoneJid))
+                    jidsToTry.push(phoneJid);
+            }
+            for (const jidToTry of jidsToTry) {
+                if (!nameForDisplay) {
+                    nameForDisplay = await this.getNameForMention(sock, jidToTry);
+                    if (nameForDisplay) {
+                        logger.info(`✅ [Welcome] Nombre encontrado con JID ${jidToTry}: "${nameForDisplay}"`);
+                    }
+                }
+            }
+            if (!nameForDisplay && sock?.pupPage) {
+                try {
+                    const groupJid = targetJid;
+                    const participantJid = waId;
+                    const result = await sock.pupPage.evaluate(async (gJid, pJid) => {
+                        try {
+                            const store = window.Store;
+                            if (!store?.GroupMetadata)
+                                return null;
+                            const groupMeta = store.GroupMetadata.get(gJid);
+                            if (!groupMeta?.participants)
+                                return null;
+                            for (const p of groupMeta.participants) {
+                                const pId = p.id?._serialized || p.id;
+                                if (pId === pJid || pId?.includes(pJid?.split('@')[0])) {
+                                    if (p.pushname)
+                                        return p.pushname;
+                                    if (p.notify)
+                                        return p.notify;
+                                    if (p.name)
+                                        return p.name;
+                                }
+                            }
+                            return null;
+                        }
+                        catch (e) {
+                            return null;
+                        }
+                    }, groupJid, participantJid);
+                    if (result) {
+                        nameForDisplay = result;
+                        logger.info(`✅ [Welcome] Nombre obtenido de GroupMetadata: "${result}"`);
+                    }
+                }
+                catch (e) {
+                }
+            }
+            if (!nameForDisplay && displayName && displayName !== 'Usuario' && displayName !== 'Unknown' && displayName !== 'undefined') {
+                nameForDisplay = displayName;
+            }
+            if (!nameForDisplay && contact) {
+                const contactName = contact.pushname || contact.name || contact.shortName;
+                if (contactName && contactName !== 'undefined' && contactName !== 'Usuario') {
+                    nameForDisplay = contactName;
+                }
+            }
+            if (!nameForDisplay || nameForDisplay === 'Usuario' || nameForDisplay === 'undefined' || nameForDisplay === 'Unknown') {
+                nameForDisplay = cleanNumberForText;
+                logger.info(`📱 [Welcome] Usando número de teléfono como nombre: "${nameForDisplay}"`);
+            }
+            logger.info(`📝 Datos finales: JID=${finalMentionJid}, mention=${userMentionText}, nameForDisplay="${nameForDisplay}"`);
             let message = replacePlaceholders(groupConfig.welcome.message, {
-                user: mentionText,
-                name: displayNameForMsg,
+                user: userMentionText,
+                name: nameForDisplay,
                 group: group?.name || 'el grupo',
                 count: count
             });
             if (!message || message.trim() === '') {
-                message = `¡Bienvenido ${mentionText} al grupo!`;
+                message = `¡Bienvenido ${userMentionText} al grupo!`;
             }
+            const mentions = [finalMentionJid];
             let imageBuffer = null;
-            logger.info(`🖼️ Welcome image check: envConfig.welcomeImages=${envConfig.features?.welcomeImages}, groupConfig.welcomeImages=${groupConfig.features?.welcomeImages}, cloudinaryUrl=${envConfig.cloudinary?.welcomeBgUrl ? 'SET' : 'NOT SET'}`);
             if (envConfig.features?.welcomeImages && groupConfig.features?.welcomeImages !== false) {
                 try {
-                    if (!envConfig.cloudinary?.welcomeBgUrl) {
-                        logger.warn('Welcome images enabled but no background URL configured in WELCOME_BG_URL');
-                    }
-                    else {
-                        const profilePicUrl = await sock.getProfilePicUrl(phone).catch((err) => {
-                            logger.debug(`No profile pic for ${phone}: ${err.message}`);
-                            return null;
-                        });
-                        imageBuffer = await WelcomeImageService.generateWelcomeImage(profilePicUrl || '', safeDisplayName, group?.name || 'el grupo');
-                        if (!imageBuffer) {
-                            logger.warn('WelcomeImageService returned null - check logs for generation errors');
-                        }
+                    if (envConfig.cloudinary?.welcomeBgUrl) {
+                        const profilePicUrl = await sock.getProfilePicUrl(waId).catch(() => null);
+                        logger.info(`🖼️ Generando imagen de bienvenida para "${nameForDisplay}"`);
+                        imageBuffer = await WelcomeImageService.generateWelcomeImage(profilePicUrl || '', nameForDisplay, group?.name || 'el grupo');
                     }
                 }
                 catch (error) {
                     logger.error(`Error generating welcome image:`, error);
                 }
             }
-            else {
-                logger.debug('Welcome images disabled or not configured');
-            }
-            const mentionId = contact && contact.id && contact.id._serialized
-                ? contact.id._serialized
-                : (isLid ? phone : `${phone.replace('@c.us', '')}@c.us`);
-            const mentions = [mentionId];
-            logger.info(`📤 Sending welcome: message="${message.substring(0, 50)}...", mentions=${JSON.stringify(mentions)}`);
             if (imageBuffer) {
                 try {
                     const base64Image = imageBuffer.toString('base64');
@@ -122,7 +254,7 @@ export class WelcomeService {
                         caption: message,
                         mentions: mentions
                     });
-                    logger.info(`✅ Imagen de bienvenida enviada`);
+                    logger.info(`✅ Imagen de bienvenida enviada a "${nameForDisplay}"`);
                 }
                 catch (error) {
                     logger.warn(`Error al enviar imagen, enviando solo texto:`, error);
@@ -132,7 +264,6 @@ export class WelcomeService {
             else {
                 await sock.sendMessage(targetJid, message, { mentions: mentions });
             }
-            logger.info(`✅ Bienvenida enviada a ${safeDisplayName} (${phone}) en grupo ${groupId}`);
             return message;
         }
         catch (error) {

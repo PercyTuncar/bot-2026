@@ -345,21 +345,62 @@ export class MemberService {
                     const puppetName = await page.evaluate(async (id) => {
                         try {
                             const store = window.Store;
-                            if (!store || !store.Contact)
+                            if (!store)
                                 return null;
-                            const contactModel = store.Contact.get(id);
-                            if (contactModel) {
-                                return contactModel.pushname || contactModel.name || contactModel.verifiedName || contactModel.notifyName;
+                            if (store.Contact) {
+                                const contactModel = store.Contact.get(id);
+                                if (contactModel) {
+                                    const name = contactModel.pushname || contactModel.name || contactModel.verifiedName || contactModel.notifyName;
+                                    if (name)
+                                        return { name, source: 'Contact' };
+                                }
+                            }
+                            if (store.ProfilePicFind && typeof store.ProfilePicFind.find === 'function') {
+                                try {
+                                    const pic = await store.ProfilePicFind.find(id);
+                                    if (pic && pic.pushname)
+                                        return { name: pic.pushname, source: 'ProfilePicFind' };
+                                }
+                                catch (e) { }
+                            }
+                            if (store.Chat) {
+                                const chat = store.Chat.get(id);
+                                if (chat) {
+                                    const name = chat.name || chat.pushname || chat.contact?.pushname;
+                                    if (name)
+                                        return { name, source: 'Chat' };
+                                }
+                            }
+                            if (id.includes('@lid') && store.GroupMetadata) {
+                                for (const [, groupMeta] of store.GroupMetadata._index || []) {
+                                    if (groupMeta && groupMeta.participants) {
+                                        for (const p of groupMeta.participants) {
+                                            const pId = p.id?._serialized || p.id;
+                                            if (pId === id) {
+                                                const name = p.pushname || p.notify || p.name;
+                                                if (name)
+                                                    return { name, source: 'GroupMetadata' };
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if (store.Presence) {
+                                const presence = store.Presence.get(id);
+                                if (presence && presence.name) {
+                                    return { name: presence.name, source: 'Presence' };
+                                }
                             }
                         }
                         catch (e) {
+                            console.error('[Puppeteer] Error en extracción:', e);
                             return null;
                         }
                         return null;
                     }, targetId);
-                    if (isValidName(puppetName)) {
-                        logger.info(`✅ Nombre extraído vía Puppeteer: "${puppetName}"`);
-                        return puppetName;
+                    if (puppetName && isValidName(puppetName.name)) {
+                        logger.info(`✅ Nombre extraído vía Puppeteer (${puppetName.source}): "${puppetName.name}"`);
+                        return puppetName.name;
                     }
                 }
             }

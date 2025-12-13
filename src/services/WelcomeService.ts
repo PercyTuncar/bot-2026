@@ -35,16 +35,130 @@ export class WelcomeService {
   }
 
   /**
+   * NUEVO: Extrae el nombre que WhatsApp mostrará para una mención
+   * WhatsApp Web tiene esta información en su Store interno, incluso en grupos grandes
+   * porque ya resolvió el nombre para poder mostrar la mención correctamente.
+   * 
+   * @param sock - Cliente de WhatsApp
+   * @param jid - JID del usuario (puede ser LID o phone@c.us)
+   * @returns El nombre que WhatsApp mostrará, o null si no se puede obtener
+   */
+  static async getNameForMention(sock: any, jid: string): Promise<string | null> {
+    if (!sock?.pupPage) return null;
+    
+    try {
+      const result = await sock.pupPage.evaluate(async (participantJid: string) => {
+        try {
+          // @ts-ignore
+          const store = window.Store;
+          if (!store) return null;
+          
+          // Helper para validar nombres
+          const isValid = (n: any): boolean => {
+            if (!n || typeof n !== 'string') return false;
+            const t = n.trim();
+            return t.length > 0 && t !== 'undefined' && t.toLowerCase() !== 'null';
+          };
+          
+          // 1. Buscar en Contact Store - Esta es la fuente principal
+          // CRÍTICO: pushname = nombre del PERFIL de WhatsApp
+          // contact.name = nombre que TÚ guardaste - NO USAR
+          if (store.Contact) {
+            const contact = store.Contact.get(participantJid);
+            if (contact) {
+              // ORDEN CORRECTO: pushname (perfil) > verifiedName > notifyName
+              // NUNCA usar contact.name (nombre guardado en contactos)
+              if (isValid(contact.pushname)) return { name: contact.pushname, source: 'Contact.pushname' };
+              if (isValid(contact.verifiedName)) return { name: contact.verifiedName, source: 'Contact.verifiedName' };
+              if (isValid(contact.notifyName)) return { name: contact.notifyName, source: 'Contact.notifyName' };
+            }
+          }
+          
+          // 2. Intentar con el Chat (a veces tiene info adicional)
+          if (store.Chat) {
+            const chat = store.Chat.get(participantJid);
+            if (chat) {
+              // Primero buscar en contact.pushname (perfil), NO en chat.name o contact.name
+              if (chat.contact) {
+                if (isValid(chat.contact.pushname)) return { name: chat.contact.pushname, source: 'Chat.contact.pushname' };
+                if (isValid(chat.contact.verifiedName)) return { name: chat.contact.verifiedName, source: 'Chat.contact.verifiedName' };
+              }
+              // chat.name puede ser el nombre del chat (no del usuario), usarlo como último recurso
+              if (isValid(chat.name)) return { name: chat.name, source: 'Chat.name' };
+            }
+          }
+          
+          // 3. Buscar en todos los GroupMetadata (el usuario puede estar en otro grupo)
+          if (store.GroupMetadata && store.GroupMetadata._index) {
+            for (const [, groupMeta] of store.GroupMetadata._index) {
+              if (groupMeta && groupMeta.participants) {
+                for (const p of groupMeta.participants) {
+                  const pId = p.id?._serialized || p.id;
+                  if (pId === participantJid) {
+                    if (isValid(p.pushname)) return { name: p.pushname, source: 'GroupMeta.pushname' };
+                    if (isValid(p.notify)) return { name: p.notify, source: 'GroupMeta.notify' };
+                    if (isValid(p.name)) return { name: p.name, source: 'GroupMeta.name' };
+                  }
+                }
+              }
+            }
+          }
+          
+          // 4. Buscar en mensajes recientes (el nombre viene en los mensajes)
+          if (store.Msg && store.Msg._index) {
+            for (const [, msg] of store.Msg._index) {
+              const senderId = msg?.senderObj?.id?._serialized || msg?.sender?._serialized || msg?.from;
+              if (senderId === participantJid) {
+                if (isValid(msg.notifyName)) return { name: msg.notifyName, source: 'Msg.notifyName' };
+                if (msg.senderObj && isValid(msg.senderObj.pushname)) {
+                  return { name: msg.senderObj.pushname, source: 'Msg.senderObj.pushname' };
+                }
+              }
+            }
+          }
+          
+          return null;
+        } catch (e) {
+          return null;
+        }
+      }, jid);
+      
+      if (result && result.name) {
+        logger.info(`✅ [getNameForMention] Nombre encontrado (${result.source}): "${result.name}"`);
+        return result.name;
+      }
+      
+      return null;
+    } catch (err: any) {
+      logger.debug(`[getNameForMention] Error: ${err.message}`);
+      return null;
+    }
+  }
+
+  /**
    * Envía mensaje de bienvenida con mención real cliqueable
    * 
-   * IMPORTANTE: Para que una mención sea cliqueable en WhatsApp:
-   * 1. El cuerpo del mensaje debe contener @[id.user] (número o LID sin sufijo)
-   * 2. El array mentions debe contener strings (IDs) - NO objetos Contact
-   * 3. WhatsApp renderiza @[numero] como @[nombre] automáticamente si tiene los datos
+   * FLUJO CORREGIDO (Dic 2025):
+   * 1. Preparar la mención (@numero) - WhatsApp la renderiza como @NombreReal
+   * 2. Obtener el nombre que WhatsApp mostrará (desde el Store interno)
+   * 3. Generar la imagen con ese nombre
+   * 4. Enviar el mensaje con imagen
+   * 
+   * Esto garantiza que el nombre en la imagen = nombre en la mención
    */
   static async sendWelcome(sock, groupId, phone, displayName, memberCount = null, contactObject = null) {
+    const sleep = (ms) => new Promise(res => setTimeout(res, ms));
+    
     try {
       logger.info(`👋 Processing welcome for ${phone} in ${groupId}`);
+      
+      // ============================================================
+      // DELAY ESTRATÉGICO: Dar tiempo a WhatsApp para propagar datos
+      // En grupos grandes, WhatsApp necesita unos segundos para 
+      // sincronizar la información del nuevo participante
+      // ============================================================
+      await sleep(2000);
+      
       const groupConfig = await GroupRepository.getConfig(groupId);
 
       if (!groupConfig?.welcome?.enabled) {
@@ -68,103 +182,135 @@ export class WelcomeService {
       const waId = isLid ? phone : (phone.includes('@') ? phone : `${phone}@c.us`);
 
       // ============================================================
-      // ESTRATEGIA DE REHIDRATACIÓN: Intentar obtener el nombre REAL
+      // PASO 1: Determinar el JID para la mención
       // ============================================================
-      // Cuando alguien entra, a veces getContactById no trae el pushname inmediatamente.
-      // Hacemos un pequeño esfuerzo de reintentos antes de enviar la bienvenida.
-      
       let contact = contactObject;
-      let realUserName = null;
-      let resolvedPhoneJid = null; // Para almacenar el JID de teléfono si es un LID
+      let resolvedPhoneJid = null;
       
-      // Si no tenemos contacto o nombre, intentamos buscarlo con retries
-      if (!contact || (!contact.pushname && !contact.name) || isLid) {
-        logger.debug(`🕵️ Buscando nombre para ${waId} con reintentos...`);
-        
-        // Si es LID, intentamos obtener el contacto para ver si tiene el número real o linkedContactId
-        if (isLid) {
-             const found = await this.getContactNameWithRetries(sock, waId);
-             if (found && found.contact) {
-                 contact = found.contact;
-                 realUserName = found.name;
-                 
-                 // Intentar obtener el Phone JID asociado si es un LID
-                 // A veces el contacto de un LID tiene la propiedad linkedContactId o number
-                 if (contact.linkedContactId) {
-                     logger.info(`🔗 Found linked contact for LID: ${contact.linkedContactId}`);
-                     // Intentar obtener el contacto del teléfono vinculado para asegurar el nombre
-                     const linkedContact = await sock.getContactById(contact.linkedContactId);
-                     if (linkedContact) {
-                         contact = linkedContact; // Usar el contacto del teléfono
-                         resolvedPhoneJid = contact.id._serialized;
-                         realUserName = contact.pushname || contact.name || realUserName; // Actualizar nombre si es mejor
-                     }
-                 } else if (contact.number) {
-                     // Si el contacto del LID tiene un número de teléfono válido
-                     const possiblePhone = contact.number; // e.g., 549...
-                     // Validar si parece un número de teléfono
-                     if (/^\d+$/.test(possiblePhone) && possiblePhone.length < 18) {
-                        resolvedPhoneJid = `${possiblePhone}@c.us`;
-                     }
-                 }
-             }
-        } else {
-            // No es LID, flujo normal
-            const found = await this.getContactNameWithRetries(sock, waId);
-            if (found) {
-              contact = found.contact;
-              realUserName = found.name;
-              logger.info(`✅ Nombre encontrado tras reintentos: "${realUserName}"`);
+      // Si es LID, intentar obtener el Phone JID
+      if (isLid) {
+        try {
+          const found = await this.getContactNameWithRetries(sock, waId, 3, 300);
+          if (found && found.contact) {
+            contact = found.contact;
+            if (contact.linkedContactId) {
+              resolvedPhoneJid = contact.linkedContactId;
+            } else if (contact.number && /^\d+$/.test(contact.number)) {
+              resolvedPhoneJid = `${contact.number}@c.us`;
             }
-        }
-      } else {
-        // Ya teníamos contacto válido
-        realUserName = contact.pushname || contact.name || contact.shortName;
-      }
-
-      // Fallback al displayName proporcionado por el evento si no encontramos nada mejor
-      if (!realUserName && displayName) {
-        realUserName = displayName;
+          }
+        } catch (e) {}
       }
       
-      const safeDisplayName = realUserName || 'Usuario';
+      // El JID final para la mención (preferir phone sobre LID)
+      const finalMentionJid = resolvedPhoneJid || waId;
       
-      // ============================================================
-      // PREPARAR VARIABLES PARA EL MENSAJE
-      // ============================================================
-      
-      // 1. Determine the JID to use for the mention (Prefer Phone JID over LID)
-      // Si logramos resolver un Phone JID desde el LID, lo usamos.
-      // Si no, usamos el waId original (que puede ser Phone o LID).
-      const finalMentionJid = resolvedPhoneJid || (!isLid ? waId : waId); 
-      
-      // 2. Extract number for text display (clean number)
+      // Extraer el número limpio para el texto de la mención
       let cleanNumberForText;
       if (finalMentionJid.includes('@lid')) {
-          cleanNumberForText = finalMentionJid.replace('@lid', '').split(':')[0];
+        cleanNumberForText = finalMentionJid.replace('@lid', '').split(':')[0];
       } else {
-          cleanNumberForText = finalMentionJid.replace('@c.us', '').replace('@s.whatsapp.net', '');
+        cleanNumberForText = finalMentionJid.replace('@c.us', '').replace('@s.whatsapp.net', '');
       }
-
-      // 3. userMentionText: Use @Number (Phone JID preferred) for the text tag.
-      // Even if it's a LID, using the number part is better than nothing, 
-      // but ideally we swapped it to the Phone JID above.
-      const userMentionText = `@${cleanNumberForText}`;
       
-      // 4. displayNameForMsg: El nombre bonito para leer (texto plano)
-      // FIX CRITICO: Si safeDisplayName es "Usuario" (fallback), intentar usar el cleanNumberForText
-      // para que al menos se vea el número en el texto si no hay nombre.
-      const displayNameForMsg = (safeDisplayName === 'Usuario') ? cleanNumberForText : safeDisplayName;
-
-      logger.info(`📝 Mention data: finalMentionJid=${finalMentionJid}, userMentionText=${userMentionText}, displayNameForMsg=${displayNameForMsg}`);
+      // Texto de la mención (ej: @51999888777)
+      const userMentionText = `@${cleanNumberForText}`;
 
       // ============================================================
-      // GENERAR MENSAJE
+      // PASO 2: Obtener el NOMBRE que WhatsApp mostrará en la mención
+      // Esta es la clave: WhatsApp ya tiene el nombre en su Store
+      // y lo usará automáticamente cuando rendericemos la mención
       // ============================================================
+      
+      let nameForDisplay: string | null = null;
+      
+      // 2.1 Intentar obtener el nombre del Store de WhatsApp usando múltiples JIDs
+      // Este es el nombre que WhatsApp mostrará cuando renderice @numero
+      const jidsToTry = [finalMentionJid];
+      if (finalMentionJid !== waId) jidsToTry.push(waId);
+      
+      // Si tenemos un número de teléfono, también intentar con ese JID
+      if (cleanNumberForText && /^\d+$/.test(cleanNumberForText)) {
+        const phoneJid = `${cleanNumberForText}@c.us`;
+        if (!jidsToTry.includes(phoneJid)) jidsToTry.push(phoneJid);
+      }
+      
+      for (const jidToTry of jidsToTry) {
+        if (!nameForDisplay) {
+          nameForDisplay = await this.getNameForMention(sock, jidToTry);
+          if (nameForDisplay) {
+            logger.info(`✅ [Welcome] Nombre encontrado con JID ${jidToTry}: "${nameForDisplay}"`);
+          }
+        }
+      }
+      
+      // 2.2 Intentar obtener desde los participantes del grupo directamente vía Puppeteer
+      if (!nameForDisplay && sock?.pupPage) {
+        try {
+          const groupJid = targetJid;
+          const participantJid = waId;
+          const result = await sock.pupPage.evaluate(async (gJid: string, pJid: string) => {
+            try {
+              // @ts-ignore
+              const store = window.Store;
+              if (!store?.GroupMetadata) return null;
+              
+              const groupMeta = store.GroupMetadata.get(gJid);
+              if (!groupMeta?.participants) return null;
+              
+              for (const p of groupMeta.participants) {
+                const pId = p.id?._serialized || p.id;
+                if (pId === pJid || pId?.includes(pJid?.split('@')[0])) {
+                  if (p.pushname) return p.pushname;
+                  if (p.notify) return p.notify;
+                  if (p.name) return p.name;
+                }
+              }
+              return null;
+            } catch (e) {
+              return null;
+            }
+          }, groupJid, participantJid);
+          
+          if (result) {
+            nameForDisplay = result;
+            logger.info(`✅ [Welcome] Nombre obtenido de GroupMetadata: "${result}"`);
+          }
+        } catch (e) {
+          // Ignorar errores
+        }
+      }
+      
+      // 2.3 Fallback al displayName proporcionado (solo si NO es "Usuario" o "Unknown")
+      if (!nameForDisplay && displayName && displayName !== 'Usuario' && displayName !== 'Unknown' && displayName !== 'undefined') {
+        nameForDisplay = displayName;
+      }
+      
+      // 2.4 Si tenemos contacto, usar su pushname (solo si es válido)
+      if (!nameForDisplay && contact) {
+        const contactName = contact.pushname || contact.name || contact.shortName;
+        if (contactName && contactName !== 'undefined' && contactName !== 'Usuario') {
+          nameForDisplay = contactName;
+        }
+      }
+      
+      // 2.5 CRÍTICO: Siempre usar el número de teléfono como fallback final
+      // NUNCA usar "Usuario" o "Unknown" - es preferible mostrar el número
+      if (!nameForDisplay || nameForDisplay === 'Usuario' || nameForDisplay === 'undefined' || nameForDisplay === 'Unknown') {
+        // Usar el número limpio (sin @lid ni @c.us)
+        nameForDisplay = cleanNumberForText;
+        logger.info(`📱 [Welcome] Usando número de teléfono como nombre: "${nameForDisplay}"`);
+      }
+      
+      logger.info(`📝 Datos finales: JID=${finalMentionJid}, mention=${userMentionText}, nameForDisplay="${nameForDisplay}"`);
 
+      // ============================================================
+      // PASO 3: Generar el mensaje con placeholders
+      // ============================================================
+      
       let message = replacePlaceholders(groupConfig.welcome.message, {
-        user: userMentionText, // @519... (Mención real cliqueable, preferiblemente Phone JID)
-        name: displayNameForMsg, // Nombre real (texto plano, no cliqueable)
+        user: userMentionText,      // @519... → WhatsApp lo renderiza como @NombreReal
+        name: nameForDisplay,        // Nombre en texto plano
         group: group?.name || 'el grupo',
         count: count
       });
@@ -173,25 +319,24 @@ export class WelcomeService {
         message = `¡Bienvenido ${userMentionText} al grupo!`;
       }
 
-      // Use the resolved JID for the mentions array
       const mentions = [finalMentionJid];
 
       // ============================================================
-      // ENVIAR (IMAGEN O TEXTO)
+      // PASO 4: Generar la imagen CON EL NOMBRE CORRECTO
+      // Usamos nameForDisplay que es el mismo nombre que WhatsApp mostrará
       // ============================================================
-
+      
       let imageBuffer: Buffer | null = null;
       if (envConfig.features?.welcomeImages && groupConfig.features?.welcomeImages !== false) {
         try {
           if (envConfig.cloudinary?.welcomeBgUrl) {
             const profilePicUrl = await sock.getProfilePicUrl(waId).catch(() => null);
-            // FIX CRITICO: Usar displayNameForMsg (que puede ser el número si no hay nombre) 
-            // en lugar de safeDisplayName (que podía ser "Usuario") para la imagen.
-            const nameForImage = displayNameForMsg;
+            
+            logger.info(`🖼️ Generando imagen de bienvenida para "${nameForDisplay}"`);
             
             imageBuffer = await WelcomeImageService.generateWelcomeImage(
               profilePicUrl || '',
-              nameForImage, 
+              nameForDisplay,   // ← ESTE ES EL NOMBRE CORRECTO
               group?.name || 'el grupo'
             );
           }
@@ -200,6 +345,10 @@ export class WelcomeService {
         }
       }
 
+      // ============================================================
+      // PASO 5: Enviar el mensaje (imagen + caption o solo texto)
+      // ============================================================
+      
       if (imageBuffer) {
         try {
           const base64Image = imageBuffer.toString('base64');
@@ -209,7 +358,7 @@ export class WelcomeService {
             caption: message,
             mentions: mentions
           });
-          logger.info(`✅ Imagen de bienvenida enviada a ${safeDisplayName}`);
+          logger.info(`✅ Imagen de bienvenida enviada a "${nameForDisplay}"`);
         } catch (error) {
           logger.warn(`Error al enviar imagen, enviando solo texto:`, error);
           await sock.sendMessage(targetJid, message, { mentions: mentions });

@@ -1,3 +1,12 @@
+import { platform } from 'os';
+if (platform() === 'win32') {
+    const currentPath = process.env.PATH || '';
+    const wbemPath = 'C:\\Windows\\System32\\wbem';
+    if (!currentPath.toLowerCase().includes(wbemPath.toLowerCase())) {
+        process.env.PATH = `${currentPath};${wbemPath}`;
+        console.log('✅ [Infrastructure] Injected wbem to PATH to fix wmic/pidusage error');
+    }
+}
 import { initializeFirebase } from './config/firebase.js';
 import { loadCommands } from './core/command-loader.js';
 import WhatsAppClient from './core/whatsapp-client.js';
@@ -35,16 +44,14 @@ async function main() {
         client.on('message_create', async (msg) => {
             await eventHandler.handleMessage(msg);
         });
-        const allEvents = ['group_join', 'group_leave', 'group_update', 'group_admin_changed',
-            'group_membership_request', 'contact_changed', 'chat_removed',
-            'chat_archived', 'chat_unarchived', 'unread_count', 'media_uploaded'];
-        for (const eventName of allEvents) {
+        const importantEvents = ['group_join', 'group_leave'];
+        for (const eventName of importantEvents) {
             client.on(eventName, (...args) => {
-                logger.info(`[DEBUG EVENT] ${eventName}: ${JSON.stringify(args)}`);
+                logger.info(`[EVENT] ${eventName}: ${args.length} args received`);
             });
         }
         client.on('group_participants_update', async (update) => {
-            logger.info(`[RAW EVENT] group_participants_update: ${JSON.stringify(update)}`);
+            logger.info(`[EVENT] group_participants_update: ${update.action} on ${update.id?._serialized || 'unknown'}`);
             await eventHandler.handleGroupParticipantsUpdate(update);
         });
         client.on('group_join', async (notification) => {
@@ -60,9 +67,26 @@ async function main() {
         });
         client.on('group_update', async (update) => {
             try {
-                logger.info(`[GROUP_UPDATE] Grupo ${update.id._serialized} actualizado`);
-                const groupId = normalizeGroupId(update.id._serialized);
-                const chat = await client.getChatById(update.id._serialized);
+                const chatId = update.id?._serialized || update.chatId;
+                if (!chatId)
+                    return;
+                logger.info(`[GROUP_UPDATE] Grupo ${chatId} actualizado`);
+                const groupId = normalizeGroupId(chatId);
+                let chat;
+                try {
+                    chat = await client.getChatById(chatId);
+                }
+                catch (err) {
+                    logger.warn(`[GROUP_UPDATE] getChatById falló: ${err.message}. Reintentando en 2s...`);
+                    await new Promise(r => setTimeout(r, 2000));
+                    try {
+                        chat = await client.getChatById(chatId);
+                    }
+                    catch (err2) {
+                        logger.warn(`[GROUP_UPDATE] getChatById falló tras reintento (normal en grupos >100): ${err2.message}`);
+                        return;
+                    }
+                }
                 const metadata = await GroupService.extractCompleteMetadata(chat);
                 await GroupRepository.update(groupId, {
                     name: metadata.name,

@@ -9,7 +9,7 @@ import ModerationService from '../services/ModerationService.js';
 import GroupRepository from '../repositories/GroupRepository.js';
 import { normalizePhone, getUserId, normalizeGroupId, extractIdFromWid, getCanonicalId } from '../utils/phone.js';
 import { extractParticipants } from '../utils/group.js';
-import { resolveLidToPhone } from '../utils/lid-resolver.js';
+import { resolveLidToPhone, forceGroupMetadataSync, extractParticipantNameAfterSync, getCachedLidName, forceLoadContactData } from '../utils/lid-resolver.js';
 import logger from '../lib/logger.js';
 
 export class EventHandler {
@@ -449,28 +449,290 @@ export class EventHandler {
    */
   async handleMemberJoin(groupId: string, phone: string, contactFromNotification?: any) {
     try {
-      // WAIT: Esperar para que WhatsApp sincronice metadatos del nuevo miembro
-      await new Promise(resolve => setTimeout(resolve, 3000));
-
       // Intentar obtener info del participante
       let displayName: string | null = null;
       let memberCount = 0;
       let contactObject = null;
 
+      // Helper para validar nombres - CRÍTICO: Rechazar el string literal "undefined"
+      const isValidName = (n: any) => {
+        if (!n || typeof n !== 'string') return false;
+        const trimmed = n.trim();
+        // Rechazar explícitamente "undefined" como string
+        if (trimmed === 'undefined' || trimmed === 'null' || trimmed === 'Unknown' || trimmed === 'Usuario') return false;
+        return trimmed.length > 0;
+      };
+      
+      // ============================================================
+      // ESTRATEGIA DEFINITIVA: Forzar carga de datos del contacto usando Puppeteer
+      // Simula abrir el perfil del usuario para que WhatsApp cargue sus datos
+      // ESTO RESUELVE EL PROBLEMA DE LAZY LOADING EN GRUPOS GRANDES
+      // ============================================================
+      const targetJid = groupId.includes('@') ? groupId : `${groupId}@g.us`;
+      const participantJid = phone.includes('@') ? phone : `${phone}@c.us`;
+      
+      logger.info(`🚀 [FORCE LOAD] Forzando carga de datos vía Puppeteer para ${phone}...`);
+      const forceLoadResult = await forceLoadContactData(this.sock, participantJid, targetJid);
+      
+      if (forceLoadResult.name && isValidName(forceLoadResult.name)) {
+        displayName = forceLoadResult.name;
+        logger.info(`✅ [FORCE LOAD] Nombre obtenido exitosamente: "${displayName}"`);
+      } else {
+        logger.warn(`⚠️ [FORCE LOAD] No se pudo obtener nombre, continuando con métodos alternativos...`);
+      }
+
       try {
-        // 1. Usar el extractor robusto de MemberService (incluye hidratación y soporte para LIDs)
-        // Pasamos groupId para habilitar resolución de LID a Phone si es necesario
-        displayName = await MemberService.extractUserProfileName(this.sock, phone, groupId);
-        
-        // 2. Si falló y tenemos info de la notificación, usarla como fallback
+        // ============================================================
+        // ESTRATEGIA MEJORADA PARA GRUPOS GRANDES (Dic 2025)
+        // 
+        // PROBLEMA: En grupos >600 miembros, WhatsApp usa "Lazy Loading"
+        // Los datos de contacto NO existen en memoria hasta que el usuario
+        // abre el panel de información del grupo.
+        // 
+        // SOLUCIÓN: Forzar la sincronización simulando la apertura del panel
+        // usando Store.Cmd.openDrawerMid() o Store.Cmd.openCurrentChatInfo()
+        // ============================================================
+
+        // 0. Verificar si ya tenemos el nombre en cache (de interacciones previas)
+        const cachedName = getCachedLidName(phone);
+        if (cachedName && isValidName(cachedName)) {
+          displayName = cachedName;
+          logger.info(`👤 ✅ Nombre obtenido de cache: "${displayName}"`);
+        }
+
+        // 1. Si tenemos info de la notificación, usarla
         if (!displayName && contactFromNotification) {
           contactObject = contactFromNotification;
-          // Helper local para validar
-          const isValid = (n) => n && typeof n === 'string' && n.trim().length > 0 && n !== 'undefined';
+          if (isValidName(contactFromNotification.pushname)) displayName = contactFromNotification.pushname;
+          else if (isValidName(contactFromNotification.notifyName)) displayName = contactFromNotification.notifyName;
+          else if (isValidName(contactFromNotification.name)) displayName = contactFromNotification.name;
+          else if (isValidName(contactFromNotification.shortName)) displayName = contactFromNotification.shortName;
           
-          if (isValid(contactFromNotification.pushname)) displayName = contactFromNotification.pushname;
-          else if (isValid(contactFromNotification.notifyName)) displayName = contactFromNotification.notifyName;
-          else if (isValid(contactFromNotification.name)) displayName = contactFromNotification.name;
+          if (displayName) {
+            logger.info(`👤 ✅ Nombre obtenido de notificación: "${displayName}"`);
+          }
+        }
+
+        // 2. Si aún no tenemos nombre, usar el extractor robusto de MemberService
+        if (!displayName) {
+          displayName = await MemberService.extractUserProfileName(this.sock, phone, groupId);
+          if (displayName) {
+            logger.info(`👤 ✅ Nombre obtenido de MemberService: "${displayName}"`);
+          }
+        }
+
+        // 3. ESTRATEGIA CLAVE PARA GRUPOS GRANDES: Forzar sincronización
+        // Si aún no tenemos nombre y es un LID, forzamos la carga de metadatos
+        if (!displayName && phone.includes('@lid')) {
+          logger.info(`🔄 [LAZY LOADING FIX] Forzando sincronización de metadatos del grupo...`);
+          
+          // Forzar la sincronización abriendo el panel de info del grupo
+          const syncSuccess = await forceGroupMetadataSync(this.sock, groupId);
+          
+          if (syncSuccess) {
+            // Esperar un momento para que los datos se propaguen
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            // Ahora intentar extraer el nombre con los datos actualizados
+            const syncedData = await extractParticipantNameAfterSync(this.sock, groupId, phone);
+            
+            if (syncedData.name && isValidName(syncedData.name)) {
+              displayName = syncedData.name;
+              logger.info(`👤 ✅ Nombre obtenido post-sync: "${displayName}"`);
+            }
+          }
+        }
+
+        // 4. ESTRATEGIA PUPPETEER DIRECTA: Forzar carga del contacto en grupos grandes
+        // Este es el método más confiable para obtener el nombre de usuarios recién unidos
+        if (!displayName && this.sock.pupPage) {
+          logger.info(`🔍 [GRUPOS GRANDES] Intentando carga forzada de contacto para ${phone}...`);
+          
+          try {
+            const puppeteerResult = await this.sock.pupPage.evaluate(async (participantId: string, gId: string) => {
+              try {
+                // @ts-ignore
+                const store = window.Store;
+                if (!store) return null;
+                
+                // Estrategia 1: Intentar obtener el contacto directamente
+                if (store.Contact) {
+                  const contact = store.Contact.get(participantId);
+                  if (contact) {
+                    const name = contact.pushname || contact.name || contact.verifiedName || contact.notifyName;
+                    if (name && name.trim() && name !== 'undefined') {
+                      return { name, source: 'Contact.get' };
+                    }
+                  }
+                }
+                
+                // Estrategia 2: Forzar carga del contacto usando WWebJS
+                if (store.Contact && typeof store.Contact.find === 'function') {
+                  try {
+                    const foundContact = await store.Contact.find(participantId);
+                    if (foundContact) {
+                      const name = foundContact.pushname || foundContact.name || foundContact.verifiedName;
+                      if (name && name.trim() && name !== 'undefined') {
+                        return { name, source: 'Contact.find' };
+                      }
+                    }
+                  } catch(e) {}
+                }
+                
+                // Estrategia 3: Obtener desde Wid (WhatsApp ID)
+                if (store.Wid) {
+                  try {
+                    const wid = store.Wid.createUserWid(participantId);
+                    if (wid && store.Contact) {
+                      const contact = await store.Contact.findByWid?.(wid);
+                      if (contact && contact.pushname) {
+                        return { name: contact.pushname, source: 'Wid.findByWid' };
+                      }
+                    }
+                  } catch(e) {}
+                }
+                
+                // Estrategia 4: Buscar en GroupMetadata del grupo específico
+                const fullGroupId = gId.includes('@') ? gId : `${gId}@g.us`;
+                if (store.GroupMetadata) {
+                  const groupMeta = store.GroupMetadata.get(fullGroupId);
+                  if (groupMeta && groupMeta.participants) {
+                    for (const p of groupMeta.participants) {
+                      const pId = p.id?._serialized || p.id;
+                      if (pId === participantId) {
+                        const name = p.pushname || p.notify || p.name;
+                        if (name && name.trim() && name !== 'undefined') {
+                          return { name, source: 'GroupMetadata' };
+                        }
+                      }
+                    }
+                  }
+                }
+                
+                // Estrategia 5: Intentar QueryExist para forzar sync
+                if (store.QueryExist) {
+                  try {
+                    const result = await store.QueryExist(participantId);
+                    if (result && result.wid) {
+                      // Esperar un momento y volver a consultar Contact
+                      await new Promise(r => setTimeout(r, 500));
+                      if (store.Contact) {
+                        const contact = store.Contact.get(participantId);
+                        if (contact && contact.pushname) {
+                          return { name: contact.pushname, source: 'QueryExist+Contact' };
+                        }
+                      }
+                    }
+                  } catch(e) {}
+                }
+                
+                // Estrategia 6: Chat.find - A veces fuerza la carga de metadata
+                if (store.Chat && typeof store.Chat.find === 'function') {
+                  try {
+                    const chat = await store.Chat.find(participantId);
+                    if (chat) {
+                      const name = chat.name || chat.pushname || chat.contact?.pushname;
+                      if (name && name.trim() && name !== 'undefined') {
+                        return { name, source: 'Chat.find' };
+                      }
+                    }
+                  } catch(e) {}
+                }
+                
+                // Estrategia 7: Buscar en TODOS los GroupMetadata (no solo el actual)
+                // El usuario podría estar en otro grupo donde tengamos sus datos
+                if (store.GroupMetadata && store.GroupMetadata._index) {
+                  try {
+                    for (const [, groupMeta] of store.GroupMetadata._index) {
+                      if (groupMeta && groupMeta.participants) {
+                        for (const p of groupMeta.participants) {
+                          const pId = p.id?._serialized || p.id;
+                          if (pId === participantId) {
+                            const name = p.pushname || p.notify || p.name;
+                            if (name && name.trim() && name !== 'undefined') {
+                              return { name, source: 'AllGroupMetadata' };
+                            }
+                          }
+                        }
+                      }
+                    }
+                  } catch(e) {}
+                }
+                
+                // Estrategia 8: Buscar en los mensajes recientes (Msg store)
+                if (store.Msg && store.Msg._index) {
+                  try {
+                    for (const [, msg] of store.Msg._index) {
+                      const senderId = msg?.senderObj?.id?._serialized || msg?.sender?.id?._serialized || msg?.from;
+                      if (senderId === participantId) {
+                        const name = msg.senderObj?.pushname || msg.notifyName || msg.senderObj?.name;
+                        if (name && name.trim() && name !== 'undefined') {
+                          return { name, source: 'MsgStore' };
+                        }
+                      }
+                    }
+                  } catch(e) {}
+                }
+                
+              } catch(e) {
+                return null;
+              }
+              return null;
+            }, phone, groupId);
+            
+            if (puppeteerResult && isValidName(puppeteerResult.name)) {
+              displayName = puppeteerResult.name;
+              logger.info(`👤 ✅ Nombre obtenido vía Puppeteer (${puppeteerResult.source}): "${displayName}"`);
+            }
+          } catch (pupErr: any) {
+            logger.debug(`[Puppeteer] Error en carga forzada: ${pupErr.message}`);
+          }
+        }
+        
+        // 2.5 ESTRATEGIA EXTRA: Si es LID, intentar usar getNumberId para resolver a teléfono real
+        // y luego obtener el contacto con el teléfono real
+        if (!displayName && phone.includes('@lid')) {
+          try {
+            logger.info(`🔍 [LID EXTRA] Intentando getNumberId para ${phone}...`);
+            
+            // getNumberId puede retornar el número real asociado al LID
+            const numberIdResult = await this.sock.getNumberId(phone.replace('@lid', '').replace('@c.us', ''));
+            
+            if (numberIdResult && numberIdResult._serialized && numberIdResult._serialized.includes('@c.us')) {
+              const realPhoneJid = numberIdResult._serialized;
+              logger.info(`🔍 [LID EXTRA] getNumberId resolvió: ${phone} → ${realPhoneJid}`);
+              
+              // Ahora intentar obtener el contacto con el número real
+              try {
+                const realContact = await this.sock.getContactById(realPhoneJid);
+                if (realContact) {
+                  if (isValidName(realContact.pushname)) {
+                    displayName = realContact.pushname;
+                    logger.info(`👤 ✅ Nombre obtenido vía getNumberId+Contact: "${displayName}"`);
+                  } else if (isValidName(realContact.name)) {
+                    displayName = realContact.name;
+                    logger.info(`👤 ✅ Nombre obtenido vía getNumberId+Contact (name): "${displayName}"`);
+                  }
+                }
+              } catch(e) {}
+            }
+          } catch (numErr: any) {
+            logger.debug(`[getNumberId] Error: ${numErr.message}`);
+          }
+        }
+        
+        // 2.6 ESTRATEGIA FINAL: Si es LID y todo falló, esperar más tiempo y reintentar
+        // En grupos grandes, WhatsApp puede tardar en sincronizar
+        if (!displayName && phone.includes('@lid')) {
+          logger.info(`🔍 [RETRY] Esperando 2s adicionales y reintentando para ${phone}...`);
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          
+          // Reintentar extractUserProfileName una vez más
+          const retryName = await MemberService.extractUserProfileName(this.sock, phone, groupId);
+          if (retryName && isValidName(retryName)) {
+            displayName = retryName;
+            logger.info(`👤 ✅ Nombre obtenido en reintento: "${displayName}"`);
+          }
         }
 
         // 3. Obtener conteo de miembros (necesario para el mensaje de bienvenida)
@@ -488,27 +750,69 @@ export class EventHandler {
               });
 
               if (participant) {
-                const isValid = (n) => n && typeof n === 'string' && n.trim().length > 0 && n !== 'undefined';
-                if (isValid(participant.pushname)) displayName = participant.pushname;
-                else if (isValid(participant.notify)) displayName = participant.notify;
-                else if (isValid(participant.notifyName)) displayName = participant.notifyName;
+                if (isValidName(participant.pushname)) displayName = participant.pushname;
+                else if (isValidName(participant.notify)) displayName = participant.notify;
+                else if (isValidName(participant.notifyName)) displayName = participant.notifyName;
               }
             }
           }
         } catch (e: any) {
-          logger.debug(`getChatById failed during join: ${e.message}`);
+          // En grupos grandes, getChatById puede fallar con "Evaluation failed: t"
+          // Esto es normal y esperado - continuamos con otros métodos
+          logger.warn(`⚠️ [GRUPOS GRANDES] getChatById falló (esperado en grupos >100): ${e.message}`);
         }
 
       } catch (err: any) {
         logger.warn(`Error obteniendo metadata para ${phone}: ${err.message}`);
       }
 
-      // Log final
-      if (displayName) {
+      // Log final - NUNCA usar "Usuario", siempre preferir el número de teléfono
+      if (displayName && displayName !== 'Usuario' && displayName !== 'Unknown') {
         logger.info(`👤 ✅ Final displayName: "${displayName}"`);
       } else {
-        logger.info(`👤 ⚠️ No se encontró nombre válido para ${phone}, usando fallback "Usuario"`);
-        displayName = "Usuario";
+        // CRÍTICO: Siempre usar el número de teléfono como fallback
+        // NUNCA usar "Usuario" o "Unknown" - es preferible mostrar el número
+        let fallbackName = '';
+        
+        // Si es un LID, intentar resolver a número real para el fallback
+        if (phone.includes('@lid')) {
+          try {
+            // Intentar getCanonicalId para obtener el número real
+            const canonical = await getCanonicalId(this.sock, phone);
+            if (canonical && canonical.includes('@c.us')) {
+              const realNumber = canonical.replace('@c.us', '');
+              if (realNumber && realNumber.length >= 8 && /^\d+$/.test(realNumber)) {
+                fallbackName = realNumber;
+                logger.info(`👤 📱 Usando número real como fallback: ${fallbackName}`);
+              }
+            }
+          } catch (e) {
+            // Ignorar errores
+          }
+          
+          // Si aún no tenemos número, extraer del LID
+          if (!fallbackName) {
+            const lidNumber = phone.split('@')[0].replace(/[^\d]/g, '');
+            if (lidNumber.length >= 8) {
+              fallbackName = lidNumber;
+              logger.info(`👤 📱 Usando número extraído del LID: ${fallbackName}`);
+            }
+          }
+        } else if (!phone.includes('@')) {
+          // Si phone ya es un número limpio, usarlo
+          fallbackName = phone;
+        } else {
+          // Extraer número de cualquier formato @c.us, @s.whatsapp.net
+          fallbackName = phone.split('@')[0];
+        }
+        
+        // Último recurso: usar el ID completo sin el dominio
+        if (!fallbackName) {
+          fallbackName = phone.split('@')[0] || phone;
+        }
+        
+        logger.info(`👤 ⚠️ No se encontró nombre válido para ${phone}, usando número: "${fallbackName}"`);
+        displayName = fallbackName;
       }
 
       // Registrar/crear miembro y asegurar estado consistente

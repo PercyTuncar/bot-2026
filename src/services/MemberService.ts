@@ -520,26 +520,78 @@ export class MemberService {
           const page = client.pupPage;
           if (page) {
               logger.info(`[MemberService] Intentando extracción directa vía Puppeteer para ${targetId}...`);
+              
+              // Estrategia mejorada: Intentar múltiples fuentes en el Store de WhatsApp
               const puppetName = await page.evaluate(async (id: string) => {
                   try {
                       // @ts-ignore
                       const store = window.Store;
-                      if (!store || !store.Contact) return null;
+                      if (!store) return null;
                       
-                      const contactModel = store.Contact.get(id);
-                      if (contactModel) {
-                          return contactModel.pushname || contactModel.name || contactModel.verifiedName || contactModel.notifyName;
+                      // 1. Intentar Contact Store
+                      if (store.Contact) {
+                          const contactModel = store.Contact.get(id);
+                          if (contactModel) {
+                              const name = contactModel.pushname || contactModel.name || contactModel.verifiedName || contactModel.notifyName;
+                              if (name) return { name, source: 'Contact' };
+                          }
                       }
-                  } catch(e) { return null; }
+                      
+                      // 2. Intentar ProfilePicFind (a veces tiene info de nombres)
+                      if (store.ProfilePicFind && typeof store.ProfilePicFind.find === 'function') {
+                          try {
+                              const pic = await store.ProfilePicFind.find(id);
+                              // A veces el objeto retornado tiene metadata con nombre
+                              if (pic && pic.pushname) return { name: pic.pushname, source: 'ProfilePicFind' };
+                          } catch(e) {}
+                      }
+                      
+                      // 3. Intentar Chat Store para buscar info
+                      if (store.Chat) {
+                          const chat = store.Chat.get(id);
+                          if (chat) {
+                              const name = chat.name || chat.pushname || chat.contact?.pushname;
+                              if (name) return { name, source: 'Chat' };
+                          }
+                      }
+                      
+                      // 4. Intentar obtener Participant de cualquier grupo (para LIDs)
+                      // El LID puede estar mapeado en algún grupo
+                      if (id.includes('@lid') && store.GroupMetadata) {
+                          for (const [, groupMeta] of store.GroupMetadata._index || []) {
+                              if (groupMeta && groupMeta.participants) {
+                                  for (const p of groupMeta.participants) {
+                                      const pId = p.id?._serialized || p.id;
+                                      if (pId === id) {
+                                          const name = p.pushname || p.notify || p.name;
+                                          if (name) return { name, source: 'GroupMetadata' };
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                      
+                      // 5. Intentar PresenceStore
+                      if (store.Presence) {
+                          const presence = store.Presence.get(id);
+                          if (presence && presence.name) {
+                              return { name: presence.name, source: 'Presence' };
+                          }
+                      }
+                      
+                  } catch(e) { 
+                      console.error('[Puppeteer] Error en extracción:', e);
+                      return null; 
+                  }
                   return null;
               }, targetId);
               
-              if (isValidName(puppetName)) {
-                  logger.info(`✅ Nombre extraído vía Puppeteer: "${puppetName}"`);
-                  return puppetName;
+              if (puppetName && isValidName(puppetName.name)) {
+                  logger.info(`✅ Nombre extraído vía Puppeteer (${puppetName.source}): "${puppetName.name}"`);
+                  return puppetName.name;
               }
           }
-      } catch (pupError) {
+      } catch (pupError: any) {
           logger.debug(`[MemberService] Puppeteer extraction failed: ${pupError.message}`);
       }
 

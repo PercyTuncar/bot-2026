@@ -7,7 +7,7 @@ import WelcomeService from '../services/WelcomeService.js';
 import ModerationService from '../services/ModerationService.js';
 import GroupRepository from '../repositories/GroupRepository.js';
 import { normalizePhone, getUserId, normalizeGroupId, extractIdFromWid, getCanonicalId } from '../utils/phone.js';
-import { resolveLidToPhone } from '../utils/lid-resolver.js';
+import { resolveLidToPhone, forceGroupMetadataSync, extractParticipantNameAfterSync, getCachedLidName, forceLoadContactData } from '../utils/lid-resolver.js';
 import logger from '../lib/logger.js';
 export class EventHandler {
     sock;
@@ -298,21 +298,231 @@ export class EventHandler {
     }
     async handleMemberJoin(groupId, phone, contactFromNotification) {
         try {
-            await new Promise(resolve => setTimeout(resolve, 3000));
             let displayName = null;
             let memberCount = 0;
             let contactObject = null;
+            const isValidName = (n) => {
+                if (!n || typeof n !== 'string')
+                    return false;
+                const trimmed = n.trim();
+                if (trimmed === 'undefined' || trimmed === 'null' || trimmed === 'Unknown' || trimmed === 'Usuario')
+                    return false;
+                return trimmed.length > 0;
+            };
+            const targetJid = groupId.includes('@') ? groupId : `${groupId}@g.us`;
+            const participantJid = phone.includes('@') ? phone : `${phone}@c.us`;
+            logger.info(`🚀 [FORCE LOAD] Forzando carga de datos vía Puppeteer para ${phone}...`);
+            const forceLoadResult = await forceLoadContactData(this.sock, participantJid, targetJid);
+            if (forceLoadResult.name && isValidName(forceLoadResult.name)) {
+                displayName = forceLoadResult.name;
+                logger.info(`✅ [FORCE LOAD] Nombre obtenido exitosamente: "${displayName}"`);
+            }
+            else {
+                logger.warn(`⚠️ [FORCE LOAD] No se pudo obtener nombre, continuando con métodos alternativos...`);
+            }
             try {
-                displayName = await MemberService.extractUserProfileName(this.sock, phone, groupId);
+                const cachedName = getCachedLidName(phone);
+                if (cachedName && isValidName(cachedName)) {
+                    displayName = cachedName;
+                    logger.info(`👤 ✅ Nombre obtenido de cache: "${displayName}"`);
+                }
                 if (!displayName && contactFromNotification) {
                     contactObject = contactFromNotification;
-                    const isValid = (n) => n && typeof n === 'string' && n.trim().length > 0 && n !== 'undefined';
-                    if (isValid(contactFromNotification.pushname))
+                    if (isValidName(contactFromNotification.pushname))
                         displayName = contactFromNotification.pushname;
-                    else if (isValid(contactFromNotification.notifyName))
+                    else if (isValidName(contactFromNotification.notifyName))
                         displayName = contactFromNotification.notifyName;
-                    else if (isValid(contactFromNotification.name))
+                    else if (isValidName(contactFromNotification.name))
                         displayName = contactFromNotification.name;
+                    else if (isValidName(contactFromNotification.shortName))
+                        displayName = contactFromNotification.shortName;
+                    if (displayName) {
+                        logger.info(`👤 ✅ Nombre obtenido de notificación: "${displayName}"`);
+                    }
+                }
+                if (!displayName) {
+                    displayName = await MemberService.extractUserProfileName(this.sock, phone, groupId);
+                    if (displayName) {
+                        logger.info(`👤 ✅ Nombre obtenido de MemberService: "${displayName}"`);
+                    }
+                }
+                if (!displayName && phone.includes('@lid')) {
+                    logger.info(`🔄 [LAZY LOADING FIX] Forzando sincronización de metadatos del grupo...`);
+                    const syncSuccess = await forceGroupMetadataSync(this.sock, groupId);
+                    if (syncSuccess) {
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                        const syncedData = await extractParticipantNameAfterSync(this.sock, groupId, phone);
+                        if (syncedData.name && isValidName(syncedData.name)) {
+                            displayName = syncedData.name;
+                            logger.info(`👤 ✅ Nombre obtenido post-sync: "${displayName}"`);
+                        }
+                    }
+                }
+                if (!displayName && this.sock.pupPage) {
+                    logger.info(`🔍 [GRUPOS GRANDES] Intentando carga forzada de contacto para ${phone}...`);
+                    try {
+                        const puppeteerResult = await this.sock.pupPage.evaluate(async (participantId, gId) => {
+                            try {
+                                const store = window.Store;
+                                if (!store)
+                                    return null;
+                                if (store.Contact) {
+                                    const contact = store.Contact.get(participantId);
+                                    if (contact) {
+                                        const name = contact.pushname || contact.name || contact.verifiedName || contact.notifyName;
+                                        if (name && name.trim() && name !== 'undefined') {
+                                            return { name, source: 'Contact.get' };
+                                        }
+                                    }
+                                }
+                                if (store.Contact && typeof store.Contact.find === 'function') {
+                                    try {
+                                        const foundContact = await store.Contact.find(participantId);
+                                        if (foundContact) {
+                                            const name = foundContact.pushname || foundContact.name || foundContact.verifiedName;
+                                            if (name && name.trim() && name !== 'undefined') {
+                                                return { name, source: 'Contact.find' };
+                                            }
+                                        }
+                                    }
+                                    catch (e) { }
+                                }
+                                if (store.Wid) {
+                                    try {
+                                        const wid = store.Wid.createUserWid(participantId);
+                                        if (wid && store.Contact) {
+                                            const contact = await store.Contact.findByWid?.(wid);
+                                            if (contact && contact.pushname) {
+                                                return { name: contact.pushname, source: 'Wid.findByWid' };
+                                            }
+                                        }
+                                    }
+                                    catch (e) { }
+                                }
+                                const fullGroupId = gId.includes('@') ? gId : `${gId}@g.us`;
+                                if (store.GroupMetadata) {
+                                    const groupMeta = store.GroupMetadata.get(fullGroupId);
+                                    if (groupMeta && groupMeta.participants) {
+                                        for (const p of groupMeta.participants) {
+                                            const pId = p.id?._serialized || p.id;
+                                            if (pId === participantId) {
+                                                const name = p.pushname || p.notify || p.name;
+                                                if (name && name.trim() && name !== 'undefined') {
+                                                    return { name, source: 'GroupMetadata' };
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                if (store.QueryExist) {
+                                    try {
+                                        const result = await store.QueryExist(participantId);
+                                        if (result && result.wid) {
+                                            await new Promise(r => setTimeout(r, 500));
+                                            if (store.Contact) {
+                                                const contact = store.Contact.get(participantId);
+                                                if (contact && contact.pushname) {
+                                                    return { name: contact.pushname, source: 'QueryExist+Contact' };
+                                                }
+                                            }
+                                        }
+                                    }
+                                    catch (e) { }
+                                }
+                                if (store.Chat && typeof store.Chat.find === 'function') {
+                                    try {
+                                        const chat = await store.Chat.find(participantId);
+                                        if (chat) {
+                                            const name = chat.name || chat.pushname || chat.contact?.pushname;
+                                            if (name && name.trim() && name !== 'undefined') {
+                                                return { name, source: 'Chat.find' };
+                                            }
+                                        }
+                                    }
+                                    catch (e) { }
+                                }
+                                if (store.GroupMetadata && store.GroupMetadata._index) {
+                                    try {
+                                        for (const [, groupMeta] of store.GroupMetadata._index) {
+                                            if (groupMeta && groupMeta.participants) {
+                                                for (const p of groupMeta.participants) {
+                                                    const pId = p.id?._serialized || p.id;
+                                                    if (pId === participantId) {
+                                                        const name = p.pushname || p.notify || p.name;
+                                                        if (name && name.trim() && name !== 'undefined') {
+                                                            return { name, source: 'AllGroupMetadata' };
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    catch (e) { }
+                                }
+                                if (store.Msg && store.Msg._index) {
+                                    try {
+                                        for (const [, msg] of store.Msg._index) {
+                                            const senderId = msg?.senderObj?.id?._serialized || msg?.sender?.id?._serialized || msg?.from;
+                                            if (senderId === participantId) {
+                                                const name = msg.senderObj?.pushname || msg.notifyName || msg.senderObj?.name;
+                                                if (name && name.trim() && name !== 'undefined') {
+                                                    return { name, source: 'MsgStore' };
+                                                }
+                                            }
+                                        }
+                                    }
+                                    catch (e) { }
+                                }
+                            }
+                            catch (e) {
+                                return null;
+                            }
+                            return null;
+                        }, phone, groupId);
+                        if (puppeteerResult && isValidName(puppeteerResult.name)) {
+                            displayName = puppeteerResult.name;
+                            logger.info(`👤 ✅ Nombre obtenido vía Puppeteer (${puppeteerResult.source}): "${displayName}"`);
+                        }
+                    }
+                    catch (pupErr) {
+                        logger.debug(`[Puppeteer] Error en carga forzada: ${pupErr.message}`);
+                    }
+                }
+                if (!displayName && phone.includes('@lid')) {
+                    try {
+                        logger.info(`🔍 [LID EXTRA] Intentando getNumberId para ${phone}...`);
+                        const numberIdResult = await this.sock.getNumberId(phone.replace('@lid', '').replace('@c.us', ''));
+                        if (numberIdResult && numberIdResult._serialized && numberIdResult._serialized.includes('@c.us')) {
+                            const realPhoneJid = numberIdResult._serialized;
+                            logger.info(`🔍 [LID EXTRA] getNumberId resolvió: ${phone} → ${realPhoneJid}`);
+                            try {
+                                const realContact = await this.sock.getContactById(realPhoneJid);
+                                if (realContact) {
+                                    if (isValidName(realContact.pushname)) {
+                                        displayName = realContact.pushname;
+                                        logger.info(`👤 ✅ Nombre obtenido vía getNumberId+Contact: "${displayName}"`);
+                                    }
+                                    else if (isValidName(realContact.name)) {
+                                        displayName = realContact.name;
+                                        logger.info(`👤 ✅ Nombre obtenido vía getNumberId+Contact (name): "${displayName}"`);
+                                    }
+                                }
+                            }
+                            catch (e) { }
+                        }
+                    }
+                    catch (numErr) {
+                        logger.debug(`[getNumberId] Error: ${numErr.message}`);
+                    }
+                }
+                if (!displayName && phone.includes('@lid')) {
+                    logger.info(`🔍 [RETRY] Esperando 2s adicionales y reintentando para ${phone}...`);
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    const retryName = await MemberService.extractUserProfileName(this.sock, phone, groupId);
+                    if (retryName && isValidName(retryName)) {
+                        displayName = retryName;
+                        logger.info(`👤 ✅ Nombre obtenido en reintento: "${displayName}"`);
+                    }
                 }
                 const targetJid = groupId.includes('@') ? groupId : `${groupId}@g.us`;
                 try {
@@ -325,30 +535,60 @@ export class EventHandler {
                                 return pId === phone || normalizePhone(pId) === normalizePhone(phone);
                             });
                             if (participant) {
-                                const isValid = (n) => n && typeof n === 'string' && n.trim().length > 0 && n !== 'undefined';
-                                if (isValid(participant.pushname))
+                                if (isValidName(participant.pushname))
                                     displayName = participant.pushname;
-                                else if (isValid(participant.notify))
+                                else if (isValidName(participant.notify))
                                     displayName = participant.notify;
-                                else if (isValid(participant.notifyName))
+                                else if (isValidName(participant.notifyName))
                                     displayName = participant.notifyName;
                             }
                         }
                     }
                 }
                 catch (e) {
-                    logger.debug(`getChatById failed during join: ${e.message}`);
+                    logger.warn(`⚠️ [GRUPOS GRANDES] getChatById falló (esperado en grupos >100): ${e.message}`);
                 }
             }
             catch (err) {
                 logger.warn(`Error obteniendo metadata para ${phone}: ${err.message}`);
             }
-            if (displayName) {
+            if (displayName && displayName !== 'Usuario' && displayName !== 'Unknown') {
                 logger.info(`👤 ✅ Final displayName: "${displayName}"`);
             }
             else {
-                logger.info(`👤 ⚠️ No se encontró nombre válido para ${phone}, usando fallback "Usuario"`);
-                displayName = "Usuario";
+                let fallbackName = '';
+                if (phone.includes('@lid')) {
+                    try {
+                        const canonical = await getCanonicalId(this.sock, phone);
+                        if (canonical && canonical.includes('@c.us')) {
+                            const realNumber = canonical.replace('@c.us', '');
+                            if (realNumber && realNumber.length >= 8 && /^\d+$/.test(realNumber)) {
+                                fallbackName = realNumber;
+                                logger.info(`👤 📱 Usando número real como fallback: ${fallbackName}`);
+                            }
+                        }
+                    }
+                    catch (e) {
+                    }
+                    if (!fallbackName) {
+                        const lidNumber = phone.split('@')[0].replace(/[^\d]/g, '');
+                        if (lidNumber.length >= 8) {
+                            fallbackName = lidNumber;
+                            logger.info(`👤 📱 Usando número extraído del LID: ${fallbackName}`);
+                        }
+                    }
+                }
+                else if (!phone.includes('@')) {
+                    fallbackName = phone;
+                }
+                else {
+                    fallbackName = phone.split('@')[0];
+                }
+                if (!fallbackName) {
+                    fallbackName = phone.split('@')[0] || phone;
+                }
+                logger.info(`👤 ⚠️ No se encontró nombre válido para ${phone}, usando número: "${fallbackName}"`);
+                displayName = fallbackName;
             }
             try {
                 await MemberService.getOrCreateUnified(groupId, phone, this.sock, { authorName: displayName });
