@@ -1,4 +1,4 @@
-﻿import GroupService from '../../services/GroupService.js';
+﻿﻿import GroupService from '../../services/GroupService.js';
 import { formatSuccess, formatError } from '../../utils/formatter.js';
 import { EMOJIS } from '../../config/constants.js';
 import { resolveGroupMetadata } from '../../utils/group.js';

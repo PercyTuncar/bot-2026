@@ -132,17 +132,7 @@ export class WelcomeService {
       
       logger.info(`📝 Mention construction: phone=${phone}, idForText=${mentionIdForText}, hasContact=${!!contact}, displayNameForMsg=${displayNameForMsg}`);
 
-      let message = replacePlaceholders(groupConfig.welcome.message, {
-        user: mentionText, // Mención cliqueable: @ID (WhatsApp lo transforma a @Nombre)
-        name: displayNameForMsg, // Nombre real legible (texto plano si no hay mención)
-        group: group?.name || 'el grupo',
-        count: count
-      });
 
-      // Ensure message is not empty
-      if (!message || message.trim() === '') {
-        message = `¡Bienvenido ${mentionText} al grupo!`;
-      }
 
       // Intentar generar y enviar imagen de bienvenida
       let imageBuffer: Buffer | null = null;
@@ -179,18 +169,40 @@ export class WelcomeService {
       }
 
       // ============================================================
-      // CRITICAL: El array mentions debe contener IDs serializados
-      // La librería whatsapp-web.js ha deprecado pasar objetos Contact
+      // FIX: Seguir la recomendación de usar el objeto Contact en mentions
+      // para asegurar que la etiqueta visual sea correcta (@Nombre)
+      // aunque pueda generar warnings de deprecación en versiones recientes.
+      // El usuario reporta que usar IDs strings no está renderizando el nombre.
       // ============================================================
-      // FIX FINAL: Asegurarse de que el array contenga strings serializados correctamente
-      // Si tenemos contacto, usamos id._serialized. Si no, construimos el ID manualmente.
-      const mentionId = contact && contact.id && contact.id._serialized 
-          ? contact.id._serialized 
-          : (isLid ? phone : `${phone.replace('@c.us', '')}@c.us`);
-          
-      const mentions = [mentionId];
       
-      logger.info(`📤 Sending welcome: message="${message.substring(0, 50)}...", mentions=${JSON.stringify(mentions)}`);
+      const mentions = [];
+      if (contact) {
+        mentions.push(contact);
+      } else {
+        // Fallback a ID string si no hay objeto contacto
+        const mentionId = isLid ? phone : `${phone.replace('@c.us', '')}@c.us`;
+        mentions.push(mentionId);
+      }
+      
+      // Ajustar la variable {user} para usar @Nombre si es posible,
+      // coincidiendo con la lógica de usar el objeto contact en mentions.
+      const userMentionText = realUserName ? `@${realUserName}` : mentionText;
+
+      logger.info(`📝 Mention construction: phone=${phone}, idForText=${mentionIdForText}, hasContact=${!!contact}, displayNameForMsg=${displayNameForMsg}, userMentionText=${userMentionText}`);
+
+      let message = replacePlaceholders(groupConfig.welcome.message, {
+        user: userMentionText, // @Nombre (si existe) o @ID
+        name: displayNameForMsg, // Nombre real legible
+        group: group?.name || 'el grupo',
+        count: count
+      });
+
+      // Ensure message is not empty (redundant check but safe)
+      if (!message || message.trim() === '') {
+        message = `¡Bienvenido ${userMentionText} al grupo!`;
+      }
+
+      logger.info(`📤 Sending welcome: message="${message.substring(0, 50)}...", mentions=${JSON.stringify(mentions.map(m => m.id ? m.id._serialized : m))}`);
 
       if (imageBuffer) {
         try {

@@ -1,4 +1,4 @@
-﻿import { getFirestore } from '../../config/firebase.js';
+﻿﻿import { getFirestore } from '../../config/firebase.js';
 import { EMOJIS } from '../../config/constants.js';
 import { normalizePhone } from '../../utils/phone.js';
 import logger from '../../lib/logger.js';

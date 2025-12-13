@@ -24,10 +24,13 @@ export class WelcomeService {
             const targetJid = groupId.includes('@') ? groupId : `${groupId}@g.us`;
             const isLid = phone.includes('@lid');
             let contact = contactObject;
-            if (!contact) {
+            if (!contact || (!contact.pushname && !contact.name)) {
                 try {
-                    contact = await sock.getContactById(phone);
-                    logger.debug(`Contact retrieved for ${phone}: pushname=${contact?.pushname}, name=${contact?.name}, shortName=${contact?.shortName}`);
+                    const freshContact = await sock.getContactById(phone);
+                    if (freshContact) {
+                        contact = freshContact;
+                        logger.debug(`Contact retrieved/refreshed for ${phone}: pushname=${contact?.pushname}, name=${contact?.name}`);
+                    }
                 }
                 catch (err) {
                     logger.debug(`Could not get contact for ${phone}: ${err.message}`);
@@ -70,10 +73,11 @@ export class WelcomeService {
                 mentionIdForText = phone.replace('@c.us', '').replace('@s.whatsapp.net', '');
             }
             const mentionText = `@${mentionIdForText}`;
-            logger.info(`📝 Mention construction: phone=${phone}, idForText=${mentionIdForText}, hasContact=${!!contact}`);
+            const displayNameForMsg = realUserName || mentionText;
+            logger.info(`📝 Mention construction: phone=${phone}, idForText=${mentionIdForText}, hasContact=${!!contact}, displayNameForMsg=${displayNameForMsg}`);
             let message = replacePlaceholders(groupConfig.welcome.message, {
                 user: mentionText,
-                name: mentionText,
+                name: displayNameForMsg,
                 group: group?.name || 'el grupo',
                 count: count
             });
@@ -105,8 +109,11 @@ export class WelcomeService {
             else {
                 logger.debug('Welcome images disabled or not configured');
             }
-            const mentions = contact ? [contact] : [phone];
-            logger.info(`📤 Sending welcome: message="${message.substring(0, 50)}...", mentions=${JSON.stringify(mentions.map(m => typeof m === 'string' ? m : m.id?._serialized || m.id))}`);
+            const mentionId = contact && contact.id && contact.id._serialized
+                ? contact.id._serialized
+                : (isLid ? phone : `${phone.replace('@c.us', '')}@c.us`);
+            const mentions = [mentionId];
+            logger.info(`📤 Sending welcome: message="${message.substring(0, 50)}...", mentions=${JSON.stringify(mentions)}`);
             if (imageBuffer) {
                 try {
                     const base64Image = imageBuffer.toString('base64');

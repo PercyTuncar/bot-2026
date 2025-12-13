@@ -1,4 +1,4 @@
-﻿import { getFirestore } from '../../config/firebase.js';
+﻿﻿import { getFirestore } from '../../config/firebase.js';
 import logger from '../../lib/logger.js';
 
 export default {
