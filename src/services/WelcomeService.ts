@@ -177,8 +177,13 @@ export class WelcomeService {
       // CRITICAL: El array mentions debe contener IDs serializados
       // La librería whatsapp-web.js ha deprecado pasar objetos Contact
       // ============================================================
-      // Si contact existe, extraemos su ID serializado. Si no, usamos el phone directamente.
-      const mentions = contact ? [contact.id._serialized] : [phone];
+      // FIX FINAL: Asegurarse de que el array contenga strings serializados correctamente
+      // Si tenemos contacto, usamos id._serialized. Si no, construimos el ID manualmente.
+      const mentionId = contact && contact.id && contact.id._serialized 
+          ? contact.id._serialized 
+          : (isLid ? phone : `${phone.replace('@c.us', '')}@c.us`);
+          
+      const mentions = [mentionId];
       
       logger.info(`📤 Sending welcome: message="${message.substring(0, 50)}...", mentions=${JSON.stringify(mentions)}`);
 
