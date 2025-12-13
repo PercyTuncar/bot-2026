@@ -152,7 +152,9 @@ export class WelcomeService {
       const userMentionText = `@${cleanNumberForText}`;
       
       // 4. displayNameForMsg: El nombre bonito para leer (texto plano)
-      const displayNameForMsg = realUserName || cleanNumberForText;
+      // FIX CRITICO: Si safeDisplayName es "Usuario" (fallback), intentar usar el cleanNumberForText
+      // para que al menos se vea el número en el texto si no hay nombre.
+      const displayNameForMsg = (safeDisplayName === 'Usuario') ? cleanNumberForText : safeDisplayName;
 
       logger.info(`📝 Mention data: finalMentionJid=${finalMentionJid}, userMentionText=${userMentionText}, displayNameForMsg=${displayNameForMsg}`);
 
@@ -183,9 +185,13 @@ export class WelcomeService {
         try {
           if (envConfig.cloudinary?.welcomeBgUrl) {
             const profilePicUrl = await sock.getProfilePicUrl(waId).catch(() => null);
+            // FIX CRITICO: Usar displayNameForMsg (que puede ser el número si no hay nombre) 
+            // en lugar de safeDisplayName (que podía ser "Usuario") para la imagen.
+            const nameForImage = displayNameForMsg;
+            
             imageBuffer = await WelcomeImageService.generateWelcomeImage(
               profilePicUrl || '',
-              safeDisplayName, // Usar nombre real en la imagen
+              nameForImage, 
               group?.name || 'el grupo'
             );
           }
