@@ -11,19 +11,30 @@ const { MessageMedia } = pkg;
 
 export class WelcomeService {
   /**
-   * Helper: Obtiene el nombre del contacto con reintentos
+   * Helper: Obtiene el nombre del contacto con reintentos agresivos
    * Útil cuando un usuario recién se une y WhatsApp aún no ha propagado los datos
    */
-  static async getContactNameWithRetries(sock, waId, retries = 5, delayMs = 500) {
+  static async getContactNameWithRetries(sock, waId, retries = 10, delayMs = 1000) {
     const sleep = (ms) => new Promise(res => setTimeout(res, ms));
     
+    let lastContact = null;
+
     for (let i = 0; i < retries; i++) {
       try {
         const contact = await sock.getContactById(waId);
         if (contact) {
+          lastContact = contact;
           const name = contact.pushname || contact.name || contact.shortName;
+          
+          // Si tiene nombre, retornamos éxito
           if (name && name.trim().length > 0) {
             return { name: name.trim(), contact };
+          }
+          
+          // Si es un LID y tiene link o número, retornamos el contacto aunque no tenga nombre
+          // para que el caller pueda seguir el link (rehidratación cruzada)
+          if (waId.includes('@lid') && (contact.linkedContactId || contact.number)) {
+             return { name: null, contact }; 
           }
         }
       } catch (err) {
@@ -31,6 +42,12 @@ export class WelcomeService {
       }
       await sleep(delayMs);
     }
+    
+    // Si agotamos reintentos, retornamos lo que tengamos
+    if (lastContact) {
+        return { name: null, contact: lastContact };
+    }
+    
     return null;
   }
 
@@ -62,64 +79,64 @@ export class WelcomeService {
       }
 
       const targetJid = groupId.includes('@') ? groupId : `${groupId}@g.us`;
-      const isLid = phone.includes('@lid');
+      let isLid = phone.includes('@lid');
       
-      // Construir el ID completo para búsquedas
-      const waId = isLid ? phone : (phone.includes('@') ? phone : `${phone}@c.us`);
+      // Construir el ID inicial (puede cambiar si resolvemos LID)
+      let waId = isLid ? phone : (phone.includes('@') ? phone : `${phone}@c.us`);
 
       // ============================================================
-      // ESTRATEGIA DE REHIDRATACIÓN: Intentar obtener el nombre REAL
+      // ESTRATEGIA DE REHIDRATACIÓN MEJORADA (Async & Aggressive)
       // ============================================================
-      // Cuando alguien entra, a veces getContactById no trae el pushname inmediatamente.
-      // Hacemos un pequeño esfuerzo de reintentos antes de enviar la bienvenida.
       
-      let contact = contactObject;
-      let realUserName = null;
-      let resolvedPhoneJid = null; // Para almacenar el JID de teléfono si es un LID
-      
-      // Si no tenemos contacto o nombre, intentamos buscarlo con retries
-      if (!contact || (!contact.pushname && !contact.name) || isLid) {
-        logger.debug(`🕵️ Buscando nombre para ${waId} con reintentos...`);
-        
-        // Si es LID, intentamos obtener el contacto para ver si tiene el número real o linkedContactId
-        if (isLid) {
-             const found = await this.getContactNameWithRetries(sock, waId);
-             if (found && found.contact) {
-                 contact = found.contact;
-                 realUserName = found.name;
-                 
-                 // Intentar obtener el Phone JID asociado si es un LID
-                 // A veces el contacto de un LID tiene la propiedad linkedContactId o number
-                 if (contact.linkedContactId) {
-                     logger.info(`🔗 Found linked contact for LID: ${contact.linkedContactId}`);
-                     // Intentar obtener el contacto del teléfono vinculado para asegurar el nombre
-                     const linkedContact = await sock.getContactById(contact.linkedContactId);
-                     if (linkedContact) {
-                         contact = linkedContact; // Usar el contacto del teléfono
-                         resolvedPhoneJid = contact.id._serialized;
-                         realUserName = contact.pushname || contact.name || realUserName; // Actualizar nombre si es mejor
-                     }
-                 } else if (contact.number) {
-                     // Si el contacto del LID tiene un número de teléfono válido
-                     const possiblePhone = contact.number; // e.g., 549...
-                     // Validar si parece un número de teléfono
+      // 1. LID RESOLUTION (Critical Step)
+      // Si es LID, intentamos resolver al JID real de teléfono primero
+      // Esto es crucial porque el JID de teléfono suele tener el nombre más rápido
+      if (isLid) {
+          try {
+             logger.debug(`🕵️ Resolviendo LID ${waId}...`);
+             // Usamos retries para el LID también, por si acaso
+             const lidResult = await this.getContactNameWithRetries(sock, waId, 3, 500);
+             const lidContact = lidResult?.contact;
+             
+             if (lidContact) {
+                 if (lidContact.linkedContactId) {
+                     logger.info(`🔗 LID Resolution: ${waId} -> ${lidContact.linkedContactId._serialized || lidContact.linkedContactId}`);
+                     waId = lidContact.linkedContactId._serialized || lidContact.linkedContactId;
+                     isLid = false; // Ya no lo tratamos como LID
+                 } else if (lidContact.number) {
+                     // Fallback si tiene número pero no linkedContactId object
+                     const possiblePhone = lidContact.number;
                      if (/^\d+$/.test(possiblePhone) && possiblePhone.length < 18) {
-                        resolvedPhoneJid = `${possiblePhone}@c.us`;
+                        waId = `${possiblePhone}@c.us`;
+                        isLid = false;
+                        logger.info(`🔗 LID Resolution (via number): ${phone} -> ${waId}`);
                      }
                  }
              }
-        } else {
-            // No es LID, flujo normal
-            const found = await this.getContactNameWithRetries(sock, waId);
-            if (found) {
+          } catch (e) { 
+              logger.warn(`LID Resolution failed: ${e.message}`);
+          }
+      }
+
+      // 2. NAME RESOLUTION (Retry Loop)
+      // Ahora buscamos el nombre sobre el waId definitivo (sea el original o el resuelto)
+      // Aumentamos retries a 10s (10 * 1000ms) como pidió el usuario
+      let contact = contactObject;
+      let realUserName = null;
+      let resolvedPhoneJid = !isLid ? waId : null;
+      
+      // Si el contacto que vino por parámetro no tiene nombre, o si cambiamos de ID (LID->Phone), buscamos de nuevo
+      const currentName = contact?.pushname || contact?.name;
+      if (!currentName || !contact || (contact.id._serialized !== waId)) {
+          logger.info(`🕵️ Buscando nombre para ${waId} (Wait up to 10s)...`);
+          const found = await this.getContactNameWithRetries(sock, waId, 10, 1000);
+          if (found) {
               contact = found.contact;
               realUserName = found.name;
-              logger.info(`✅ Nombre encontrado tras reintentos: "${realUserName}"`);
-            }
-        }
+              if (realUserName) logger.info(`✅ Nombre encontrado: "${realUserName}"`);
+          }
       } else {
-        // Ya teníamos contacto válido
-        realUserName = contact.pushname || contact.name || contact.shortName;
+          realUserName = currentName;
       }
 
       // Fallback al displayName proporcionado por el evento si no encontramos nada mejor
