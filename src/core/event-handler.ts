@@ -15,12 +15,16 @@ import logger from '../lib/logger.js';
 export class EventHandler {
   private sock: any;
   private processedMessages: Map<string, number>;
+  private processedWelcomes: Map<string, number>;
 
   constructor(sock) {
     this.sock = sock;
     // Cache para evitar procesar el mismo mensaje dos veces
     // Usa el ID único del mensaje de WhatsApp si está disponible
     this.processedMessages = new Map();
+    // Cache para evitar procesar la misma bienvenida dos veces
+    this.processedWelcomes = new Map();
+    
     // Limpiar cache cada 2 minutos para evitar memory leak
     setInterval(() => {
       const now = Date.now();
@@ -28,6 +32,12 @@ export class EventHandler {
       for (const [key, timestamp] of this.processedMessages.entries()) {
         if (now - timestamp > 2 * 60 * 1000) {
           this.processedMessages.delete(key);
+        }
+      }
+      // Mantener solo bienvenidas de los últimos 2 minutos
+      for (const [key, timestamp] of this.processedWelcomes.entries()) {
+        if (now - timestamp > 2 * 60 * 1000) {
+          this.processedWelcomes.delete(key);
         }
       }
     }, 60 * 1000); // Ejecutar limpieza cada minuto
@@ -449,6 +459,21 @@ export class EventHandler {
    */
   async handleMemberJoin(groupId: string, phone: string, contactFromNotification?: any) {
     try {
+      // VERIFICACIÓN DE DUPLICADOS
+      // Crear clave única: ID_GRUPO + ID_USUARIO
+      const welcomeKey = `${groupId}_${phone}_welcome`;
+      const now = Date.now();
+      const lastWelcome = this.processedWelcomes.get(welcomeKey);
+
+      // Si ya se procesó en los últimos 60 segundos, ignorar
+      if (lastWelcome && (now - lastWelcome < 60 * 1000)) {
+        logger.info(`🚫 Bienvenida duplicada ignorada para ${phone} en ${groupId}`);
+        return;
+      }
+
+      // Marcar como procesado
+      this.processedWelcomes.set(welcomeKey, now);
+
       // Intentar obtener info del participante
       let displayName: string | null = null;
       let memberCount = 0;

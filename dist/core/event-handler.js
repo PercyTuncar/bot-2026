@@ -12,14 +12,21 @@ import logger from '../lib/logger.js';
 export class EventHandler {
     sock;
     processedMessages;
+    processedWelcomes;
     constructor(sock) {
         this.sock = sock;
         this.processedMessages = new Map();
+        this.processedWelcomes = new Map();
         setInterval(() => {
             const now = Date.now();
             for (const [key, timestamp] of this.processedMessages.entries()) {
                 if (now - timestamp > 2 * 60 * 1000) {
                     this.processedMessages.delete(key);
+                }
+            }
+            for (const [key, timestamp] of this.processedWelcomes.entries()) {
+                if (now - timestamp > 2 * 60 * 1000) {
+                    this.processedWelcomes.delete(key);
                 }
             }
         }, 60 * 1000);
@@ -298,6 +305,14 @@ export class EventHandler {
     }
     async handleMemberJoin(groupId, phone, contactFromNotification) {
         try {
+            const welcomeKey = `${groupId}_${phone}_welcome`;
+            const now = Date.now();
+            const lastWelcome = this.processedWelcomes.get(welcomeKey);
+            if (lastWelcome && (now - lastWelcome < 60 * 1000)) {
+                logger.info(`🚫 Bienvenida duplicada ignorada para ${phone} en ${groupId}`);
+                return;
+            }
+            this.processedWelcomes.set(welcomeKey, now);
             let displayName = null;
             let memberCount = 0;
             let contactObject = null;

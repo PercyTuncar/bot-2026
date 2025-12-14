@@ -119,7 +119,28 @@ export class WelcomeService {
         const sleep = (ms) => new Promise(res => setTimeout(res, ms));
         try {
             logger.info(`👋 Processing welcome for ${phone} in ${groupId}`);
+            const targetJid = groupId.includes('@') ? groupId : `${groupId}@g.us`;
+            let chat = null;
+            try {
+                chat = await sock.getChatById(targetJid);
+            }
+            catch (e) {
+                logger.warn(`Could not get chat object for ${targetJid}: ${e.message}`);
+            }
+            if (chat) {
+                logger.info(`[Welcome] Enviando estado 'composing' para forzar sync...`);
+                try {
+                    await chat.sendStateTyping();
+                }
+                catch (e) { }
+            }
             await sleep(2000);
+            if (chat) {
+                try {
+                    await chat.clearState();
+                }
+                catch (e) { }
+            }
             const groupConfig = await GroupRepository.getConfig(groupId);
             if (!groupConfig?.welcome?.enabled) {
                 logger.info(`ℹ️ Welcome disabled for group ${groupId}`);
@@ -131,7 +152,6 @@ export class WelcomeService {
                 const members = await MemberRepository.getActiveMembers(groupId);
                 count = members.length;
             }
-            const targetJid = groupId.includes('@') ? groupId : `${groupId}@g.us`;
             const isLid = phone.includes('@lid');
             const waId = isLid ? phone : (phone.includes('@') ? phone : `${phone}@c.us`);
             let contact = contactObject;
@@ -169,13 +189,25 @@ export class WelcomeService {
                 if (!jidsToTry.includes(phoneJid))
                     jidsToTry.push(phoneJid);
             }
-            for (const jidToTry of jidsToTry) {
-                if (!nameForDisplay) {
-                    nameForDisplay = await this.getNameForMention(sock, jidToTry);
-                    if (nameForDisplay) {
-                        logger.info(`✅ [Welcome] Nombre encontrado con JID ${jidToTry}: "${nameForDisplay}"`);
+            let attempts = 0;
+            const maxAttempts = 2;
+            while (!nameForDisplay && attempts <= maxAttempts) {
+                if (attempts > 0) {
+                    logger.info(`[Welcome] Reintentando obtener nombre (intento ${attempts})...`);
+                    await sleep(1500);
+                }
+                for (const jidToTry of jidsToTry) {
+                    if (!nameForDisplay) {
+                        nameForDisplay = await this.getNameForMention(sock, jidToTry);
+                        if (nameForDisplay) {
+                            logger.info(`✅ [Welcome] Nombre encontrado con JID ${jidToTry}: "${nameForDisplay}"`);
+                            break;
+                        }
                     }
                 }
+                if (nameForDisplay)
+                    break;
+                attempts++;
             }
             if (!nameForDisplay && sock?.pupPage) {
                 try {
