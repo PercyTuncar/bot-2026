@@ -62,8 +62,8 @@ export default {
     // Verificar si el target es admin (no se puede expulsar admins)
     if (chat && chat.isGroup) {
       try {
-        const participant = chat.participants?.find(p => 
-          p.id._serialized === mentionJid || 
+        const participant = chat.participants?.find(p =>
+          p.id._serialized === mentionJid ||
           p.id._serialized === `${targetPhone}@c.us` ||
           p.id._serialized === `${targetPhone}@s.whatsapp.net` ||
           p.id._serialized === `${targetPhone}@lid`
@@ -85,13 +85,13 @@ export default {
           quotedMessageId = quotedMsg.id?._serialized || quotedMsg.id?.id;
           // Capturar el contenido del mensaje como evidencia
           quotedMessageContent = quotedMsg.body || quotedMsg.caption || '[Mensaje sin texto - posible media]';
-          
+
           // Si es media, agregar descripción del tipo
           if (quotedMsg.hasMedia) {
             const mediaType = quotedMsg.type || 'media';
             quotedMessageContent = `[${mediaType.toUpperCase()}] ${quotedMessageContent || ''}`.trim();
           }
-          
+
           logger.info(`[KICK] Captured quoted message content: "${quotedMessageContent.substring(0, 100)}..."`);
         }
       } catch (e) {
@@ -131,7 +131,7 @@ export default {
       // 1. Buscar el documento del miembro para obtener el docId correcto
       const found = await MemberRepository.findByPhoneOrLid(groupId, targetPhone, targetPhone);
       const docId = found?.docId || targetPhone;
-      
+
       // 2. Actualizar estado del miembro en la BD usando el docId correcto
       await MemberRepository.update(groupId, docId, {
         isMember: false,
@@ -142,7 +142,7 @@ export default {
       });
 
       // 3. Registrar el kick en el historial usando WarningService
-      await WarningService.logKick(groupId, targetPhone, reason);
+      await WarningService.logKick(groupId, targetPhone, reason, normalizedAdmin, adminName);
 
       // 3. Intentar eliminar el mensaje citado (si existe)
       if (quotedMsg && quotedMessageId) {
@@ -161,10 +161,10 @@ export default {
       // 4. Ejecutar la expulsión del grupo
       const targetJid = groupJid || (groupId.includes('@') ? groupId : `${groupId}@g.us`);
       const chatForKick = await sock.getChatById(targetJid);
-      
+
       // Construir el JID correcto para la expulsión
       const participantToKick = target.isLid ? mentionJid : `${targetPhone}@s.whatsapp.net`;
-      
+
       await chatForKick.removeParticipants([participantToKick]);
 
       // 5. Enviar mensaje de confirmación
@@ -173,7 +173,7 @@ export default {
       confirmMessage += `👮 *Por:* ${adminName}\n`;
       confirmMessage += `📅 *Fecha:* ${new Date().toLocaleString('es-PE')}\n\n`;
       confirmMessage += `📋 *Motivo:*\n${reason}`;
-      
+
       if (quotedMessageContent) {
         confirmMessage += `\n\n🗑️ _El mensaje de evidencia ha sido eliminado_`;
       }
@@ -184,10 +184,10 @@ export default {
 
     } catch (error) {
       logger.error('[KICK] Error in kick command:', error);
-      
+
       // Determinar el tipo de error para dar un mensaje más específico
       let errorMessage = 'Error al expulsar usuario.';
-      
+
       if (error.message?.includes('not-authorized') || error.message?.includes('forbidden')) {
         errorMessage = 'El bot no tiene permisos de administrador en este grupo.';
       } else if (error.message?.includes('not-participant') || error.message?.includes('not found')) {
@@ -195,7 +195,7 @@ export default {
       } else if (error.message?.includes('admin')) {
         errorMessage = 'No se puede expulsar a un administrador.';
       }
-      
+
       await sock.sendMessage(replyJid, formatError(errorMessage));
     }
   }

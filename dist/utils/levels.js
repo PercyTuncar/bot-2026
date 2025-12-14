@@ -22,7 +22,11 @@ export function checkLevelUp(oldPoints, newPoints, levels = DEFAULT_GROUP_CONFIG
             leveled: true,
             oldLevel,
             newLevel,
-            message: `🎉 *¡NIVEL ALCANZADO!*\n\n¡Has subido a *${newLevel.name}*!\nNivel ${newLevel.level} • ${newPoints} puntos`
+            message: `\n\n🏆 *¡SUBIDA DE NIVEL!* 🏆\n\n` +
+                `⬆️ Has alcanzado el nivel *${newLevel.level}*\n` +
+                `🎖️ Rango: *${newLevel.name}*\n` +
+                `💎 Puntos: *${newPoints}*\n\n` +
+                `¡Felicitaciones! 🎊`
         };
     }
     return null;

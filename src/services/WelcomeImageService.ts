@@ -45,43 +45,64 @@ class WelcomeImageService {
     client: any
   ): Promise<Buffer | null> {
     try {
-      // Verificar que las imágenes de bienvenida estén habilitadas
+      // Verificar habilitación
       if (!config.features.welcomeImages) {
-        logger.debug('Welcome images disabled in config');
         return null;
       }
 
-      // Obtener URL del fondo desde configuración
       this.backgroundUrl = config.cloudinary.welcomeBgUrl;
       if (!this.backgroundUrl) {
-        logger.warn('❌ No hay URL de fondo configurada (WELCOME_BG_URL)');
+        logger.warn('❌ No config: WELCOME_BG_URL');
         return null;
       }
 
-      logger.info(`🖼️ Generando imagen de bienvenida para ${userName || userId}`);
-      logger.info(`🖼️ URL de fondo configurada: ${this.backgroundUrl}`);
+      logger.info(`🖼️ Generating welcome image for: ${userName} (ID: ${userId})`);
 
       // ============================================================
-      // PASO 1: Obtener URL del Avatar
+      // PASO 1: Obtener la MEJOR URL de Avatar posible
       // ============================================================
-      // Generar semilla única para Multiavatar (basada en nombre o ID)
-      const avatarSeed = userName || userId || `user_${Date.now()}`;
-      let avatarUrl = this.getMultiavatarUrl(avatarSeed);
+      let avatarUrl: string | null = null;
       let usingMultiavatar = true;
 
-      if (client) {
+      if (client && userId) {
         try {
-          const profilePicUrl = await client.getProfilePicUrl(userId);
+          // Asegurar formato correcto del ID
+          let contactId = userId;
+          if (!contactId.includes('@')) {
+            contactId = `${contactId}@c.us`;
+          }
+
+          logger.info(`🖼️ Fetching profile picture for: ${contactId}`);
+
+          // Según docs.wwebjs.dev: getProfilePicUrl(contactId) → Promise<string>
+          // Retorna la URL de la foto de perfil si la privacidad lo permite
+          const profilePicUrl = await client.getProfilePicUrl(contactId);
+
           if (profilePicUrl) {
             avatarUrl = profilePicUrl;
             usingMultiavatar = false;
-            logger.debug(`✅ Foto de perfil obtenida para ${userName}`);
+            logger.info(`✅ Profile pic URL obtained successfully`);
           } else {
-            logger.info(`🎨 Usuario ${userName || userId} sin foto, usando Multiavatar`);
+            logger.info(`ℹ️ No profile pic for ${contactId} (null returned)`);
           }
         } catch (e: any) {
-          logger.info(`🎨 Usuario ${userName || userId} con foto privada, usando Multiavatar`);
+          // getProfilePicUrl lanza error si la privacidad no lo permite o el usuario no tiene foto
+          logger.info(`ℹ️ Could not get profile pic: ${e.message || 'privacy/no photo'}`);
         }
+      }
+
+      // Si no hay foto real, usar Multiavatar con semilla dinámica
+      if (!avatarUrl) {
+        // Usar userName si existe y es válido, sino usar el userId limpio
+        let seed = userName || userId || `user_${Date.now()}`;
+        // Limpiar valores inválidos para tener variedad
+        if (seed === 'undefined' || seed === 'null' || seed === 'Usuario' || seed === 'Unknown') {
+          seed = `user_${Date.now()}`;
+        }
+        // Remover sufijos de WhatsApp para una semilla limpia
+        seed = seed.replace(/@c\.us$/, '').replace(/@lid$/, '').replace(/@s\.whatsapp\.net$/, '');
+        logger.info(`🎨 Using Multiavatar with seed: "${seed}"`);
+        avatarUrl = this.getMultiavatarUrl(seed);
       }
 
       // ============================================================
@@ -168,8 +189,8 @@ class WelcomeImageService {
 
       // Redimensionar primero a un tamaño mayor
       const avatarResized = await sharp(avatarBuf)
-        .resize(avatarTargetSize + 40, avatarTargetSize + 40, { 
-          fit: 'cover', 
+        .resize(avatarTargetSize + 40, avatarTargetSize + 40, {
+          fit: 'cover',
           position: 'centre'
         })
         .png()
@@ -210,7 +231,7 @@ class WelcomeImageService {
       const welcomeTextSize = 46;    // Más grande e impactante
       const userNameSize = 32;
       const dateTimeSize = 16;
-      
+
       // Espaciados reducidos para diseño más compacto
       const spacingAfterAvatar = 10; // Reducido de 20 a 10
       const spacingAfterWelcome = 8;
@@ -301,8 +322,8 @@ class WelcomeImageService {
     </linearGradient>
   </defs>
   <rect width="${size}" height="${size}" fill="url(#bgGrad)"/>
-  <circle cx="${size/2}" cy="${size/3}" r="${size/5}" fill="rgba(255,255,255,0.9)"/>
-  <ellipse cx="${size/2}" cy="${size * 0.95}" rx="${size/2.8}" ry="${size/3}" fill="rgba(255,255,255,0.9)"/>
+  <circle cx="${size / 2}" cy="${size / 3}" r="${size / 5}" fill="rgba(255,255,255,0.9)"/>
+  <ellipse cx="${size / 2}" cy="${size * 0.95}" rx="${size / 2.8}" ry="${size / 3}" fill="rgba(255,255,255,0.9)"/>
 </svg>`);
 
     logger.warn('⚠️ Usando placeholder de último recurso (Multiavatar no disponible)');
@@ -435,8 +456,8 @@ class WelcomeImageService {
       const avatarTargetSize = AV_SIZE + 2;
 
       const avatarResized = await sharp(avatarBuf)
-        .resize(avatarTargetSize + 40, avatarTargetSize + 40, { 
-          fit: 'cover', 
+        .resize(avatarTargetSize + 40, avatarTargetSize + 40, {
+          fit: 'cover',
           position: 'centre'
         })
         .png()

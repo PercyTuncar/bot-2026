@@ -2,7 +2,7 @@ import WarningService from '../../services/WarningService.js';
 import ConfigService from '../../services/ConfigService.js';
 import { getTargetUser } from '../../utils/parser.js';
 import { normalizePhone } from '../../utils/phone.js';
-import { formatSuccess, formatError } from '../../utils/formatter.js';
+import { formatError } from '../../utils/formatter.js';
 import logger from '../../lib/logger.js';
 export default {
     name: 'unwarn',
@@ -33,8 +33,16 @@ export default {
             const result = await WarningService.resetWarnings(groupId, targetPhone, normalizedAdmin, msg.pushName || normalizedAdmin);
             const config = await ConfigService.getGroupConfig(groupId);
             const maxWarnings = config?.limits?.maxWarnings || 3;
-            await sock.sendMessage(replyJid, formatSuccess(`Se reseteó el contador de advertencias de @${target.phone} (${targetName})\n\n` +
-                `📊 *Advertencias actuales:* ${result.warnings}/${maxWarnings}`), { mentions: [mentionJid] });
+            let unwarnMessage = `\n\n✅ *ADVERTENCIAS RESETEADAS* ✅\n\n`;
+            unwarnMessage += `👤 *Usuario:* @${target.phone}\n`;
+            unwarnMessage += `📛 *Nombre:* ${targetName}\n\n`;
+            unwarnMessage += `━━━━━━━━━━━━━━━━━━━━\n`;
+            unwarnMessage += `📊 *Estado actual:*\n`;
+            unwarnMessage += `> _Advertencias: 0/${maxWarnings}_\n`;
+            unwarnMessage += `> _Historial limpio_\n`;
+            unwarnMessage += `━━━━━━━━━━━━━━━━━━━━\n\n`;
+            unwarnMessage += `🎉 _El usuario tiene un nuevo comienzo_`;
+            await sock.sendMessage(replyJid, unwarnMessage, { mentions: [mentionJid] });
         }
         catch (error) {
             logger.error('[UNWARN] Error in unwarn command:', error);

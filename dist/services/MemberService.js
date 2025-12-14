@@ -374,12 +374,17 @@ export class MemberService {
                             if (id.includes('@lid') && store.GroupMetadata) {
                                 for (const [, groupMeta] of store.GroupMetadata._index || []) {
                                     if (groupMeta && groupMeta.participants) {
-                                        for (const p of groupMeta.participants) {
-                                            const pId = p.id?._serialized || p.id;
-                                            if (pId === id) {
-                                                const name = p.pushname || p.notify || p.name;
-                                                if (name)
-                                                    return { name, source: 'GroupMetadata' };
+                                        const participants = Array.isArray(groupMeta.participants)
+                                            ? groupMeta.participants
+                                            : (groupMeta.participants.getModelsArray ? groupMeta.participants.getModelsArray() : []);
+                                        if (Array.isArray(participants)) {
+                                            for (const p of participants) {
+                                                const pId = p.id?._serialized || p.id;
+                                                if (pId === id) {
+                                                    const name = p.pushname || p.notify || p.name;
+                                                    if (name)
+                                                        return { name, source: 'GroupMetadata' };
+                                                }
                                             }
                                         }
                                     }

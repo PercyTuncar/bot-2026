@@ -141,15 +141,22 @@ export class WarningService {
         const warnHistory = member?.warnHistory ? [...member.warnHistory] : [];
         warnHistory.push({
             type: 'KICK',
-            reason,
-            byPhone: byPhone ? (normalizePhone(byPhone) || byPhone) : undefined,
-            byName: byName || undefined,
+            reason: reason || 'Expulsado por un administrador',
+            byPhone: byPhone ? (normalizePhone(byPhone) || byPhone) : 'admin',
+            byName: byName || 'Administrador',
             timestamp: getNow()
         });
+        const cleanedHistory = warnHistory.map(entry => ({
+            type: entry.type || 'UNKNOWN',
+            reason: entry.reason || 'Sin motivo especificado',
+            byPhone: entry.byPhone || 'system',
+            byName: entry.byName || 'Sistema',
+            timestamp: entry.timestamp || getNow()
+        }));
         const totalKicks = (member?.totalKicks || 0) + 1;
         await MemberRepository.update(groupId, docId, {
             warnings: 0,
-            warnHistory,
+            warnHistory: cleanedHistory,
             totalKicks,
             isMember: false,
             kickedAt: getNow()

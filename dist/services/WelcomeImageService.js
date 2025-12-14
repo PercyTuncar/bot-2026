@@ -13,34 +13,45 @@ class WelcomeImageService {
     async createWelcomeImage(userId, userName, client) {
         try {
             if (!config.features.welcomeImages) {
-                logger.debug('Welcome images disabled in config');
                 return null;
             }
             this.backgroundUrl = config.cloudinary.welcomeBgUrl;
             if (!this.backgroundUrl) {
-                logger.warn('❌ No hay URL de fondo configurada (WELCOME_BG_URL)');
+                logger.warn('❌ No config: WELCOME_BG_URL');
                 return null;
             }
-            logger.info(`🖼️ Generando imagen de bienvenida para ${userName || userId}`);
-            logger.info(`🖼️ URL de fondo configurada: ${this.backgroundUrl}`);
-            const avatarSeed = userName || userId || `user_${Date.now()}`;
-            let avatarUrl = this.getMultiavatarUrl(avatarSeed);
+            logger.info(`🖼️ Generating welcome image for: ${userName} (ID: ${userId})`);
+            let avatarUrl = null;
             let usingMultiavatar = true;
-            if (client) {
+            if (client && userId) {
                 try {
-                    const profilePicUrl = await client.getProfilePicUrl(userId);
+                    let contactId = userId;
+                    if (!contactId.includes('@')) {
+                        contactId = `${contactId}@c.us`;
+                    }
+                    logger.info(`🖼️ Fetching profile picture for: ${contactId}`);
+                    const profilePicUrl = await client.getProfilePicUrl(contactId);
                     if (profilePicUrl) {
                         avatarUrl = profilePicUrl;
                         usingMultiavatar = false;
-                        logger.debug(`✅ Foto de perfil obtenida para ${userName}`);
+                        logger.info(`✅ Profile pic URL obtained successfully`);
                     }
                     else {
-                        logger.info(`🎨 Usuario ${userName || userId} sin foto, usando Multiavatar`);
+                        logger.info(`ℹ️ No profile pic for ${contactId} (null returned)`);
                     }
                 }
                 catch (e) {
-                    logger.info(`🎨 Usuario ${userName || userId} con foto privada, usando Multiavatar`);
+                    logger.info(`ℹ️ Could not get profile pic: ${e.message || 'privacy/no photo'}`);
                 }
+            }
+            if (!avatarUrl) {
+                let seed = userName || userId || `user_${Date.now()}`;
+                if (seed === 'undefined' || seed === 'null' || seed === 'Usuario' || seed === 'Unknown') {
+                    seed = `user_${Date.now()}`;
+                }
+                seed = seed.replace(/@c\.us$/, '').replace(/@lid$/, '').replace(/@s\.whatsapp\.net$/, '');
+                logger.info(`🎨 Using Multiavatar with seed: "${seed}"`);
+                avatarUrl = this.getMultiavatarUrl(seed);
             }
             let avatarBuf;
             let bgBuf;

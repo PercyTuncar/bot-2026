@@ -106,7 +106,10 @@ export class PointsService {
                 return {
                     pointsAdded: true,
                     newPoints,
-                    message: `¡Has ganado 1 ${pointsName}! Total: ${newPoints} ${pointsName}`,
+                    message: `\n\n🎉 *¡PUNTO GANADO!* 🎉\n\n` +
+                        `✨ Has obtenido *+1 ${pointsName}*\n` +
+                        `💰 Total acumulado: *${newPoints} ${pointsName}*\n\n` +
+                        `¡Sigue participando! 🚀`,
                     levelUp: levelUpInfo
                 };
             }

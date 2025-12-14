@@ -50,6 +50,7 @@ interface CloudinaryConfig {
   apiKey: string;
   apiSecret: string;
   welcomeBgUrl: string;
+  matchBgUrl: string;
 }
 
 export interface AppConfig {
@@ -121,7 +122,8 @@ export const config: AppConfig = {
     cloudName: process.env.CLOUDINARY_CLOUD_NAME || '',
     apiKey: process.env.CLOUDINARY_API_KEY || '',
     apiSecret: process.env.CLOUDINARY_API_SECRET || '',
-    welcomeBgUrl: process.env.WELCOME_BG_URL || ''
+    welcomeBgUrl: process.env.WELCOME_BG_URL || '',
+    matchBgUrl: process.env.MATCH_BG_URL || ''
   }
 };
 

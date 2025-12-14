@@ -1,7 +1,7 @@
 import WarningService from '../../services/WarningService.js';
 import { getTargetUser } from '../../utils/parser.js';
 import { normalizePhone } from '../../utils/phone.js';
-import { formatSuccess, formatError } from '../../utils/formatter.js';
+import { formatError } from '../../utils/formatter.js';
 import logger from '../../lib/logger.js';
 export default {
     name: 'warn',
@@ -50,9 +50,20 @@ export default {
         const adminName = msg.pushName || normalizedAdmin;
         try {
             const result = await WarningService.addWarning(groupId, targetPhone, normalizedAdmin, adminName, reason);
-            await sock.sendMessage(replyJid, formatSuccess(`@${target.phone} (${targetName}) ha sido advertido\n\n` +
-                `📄 *Razón:* ${reason}\n\n` +
-                `📊 *Advertencias:* ${result.warnings}/${result.maxWarnings}`), { mentions: [mentionJid] });
+            const progressBar = '⚠️'.repeat(result.warnings) + '▫️'.repeat(result.maxWarnings - result.warnings);
+            let warnMessage = `\n\n⚠️ *ADVERTENCIA REGISTRADA* ⚠️\n\n`;
+            warnMessage += `👤 *Usuario:* @${target.phone}\n`;
+            warnMessage += `📛 *Nombre:* ${targetName}\n\n`;
+            warnMessage += `━━━━━━━━━━━━━━━━━━━━\n`;
+            warnMessage += `📄 *Motivo:*\n`;
+            warnMessage += `> _${reason}_\n`;
+            warnMessage += `━━━━━━━━━━━━━━━━━━━━\n\n`;
+            warnMessage += `📊 *Advertencias:* ${result.warnings}/${result.maxWarnings}\n`;
+            warnMessage += `${progressBar}\n`;
+            if (result.warnings >= result.maxWarnings - 1 && !result.shouldKick) {
+                warnMessage += `\n⚡ _¡Próxima advertencia = expulsión!_`;
+            }
+            await sock.sendMessage(replyJid, warnMessage, { mentions: [mentionJid] });
             if (result.shouldKick) {
                 logger.info(`[WARN] User ${targetPhone} reached warning limit. Executing kick...`);
                 const targetJid = groupJid || (groupId.includes('@') ? groupId : `${groupId}@g.us`);

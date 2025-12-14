@@ -24,9 +24,14 @@ export async function forceLoadContactData(client, participantJid, groupJid) {
                 if (gJid && store.GroupMetadata) {
                     try {
                         const groupMeta = store.GroupMetadata.get(gJid);
-                        if (groupMeta && groupMeta.participants && Array.isArray(groupMeta.participants)) {
-                            participantCount = groupMeta.participants.length;
-                            isLargeGroup = participantCount > 100;
+                        if (groupMeta && groupMeta.participants) {
+                            const participants = Array.isArray(groupMeta.participants)
+                                ? groupMeta.participants
+                                : (groupMeta.participants.getModelsArray ? groupMeta.participants.getModelsArray() : []);
+                            if (Array.isArray(participants)) {
+                                participantCount = participants.length;
+                                isLargeGroup = participantCount > 100;
+                            }
                         }
                     }
                     catch (e) {
@@ -121,16 +126,21 @@ export async function forceLoadContactData(client, participantJid, groupJid) {
                 if (!foundName && gJid && store.GroupMetadata) {
                     const groupMeta = store.GroupMetadata.get(gJid);
                     if (groupMeta && groupMeta.participants) {
-                        for (const p of groupMeta.participants) {
-                            const pid = p.id?._serialized || p.id;
-                            if (pid === pJid) {
-                                if (isValid(p.pushname))
-                                    foundName = p.pushname;
-                                else if (isValid(p.notify))
-                                    foundName = p.notify;
-                                if (!foundPhone)
-                                    foundPhone = p.number || null;
-                                break;
+                        const participants = Array.isArray(groupMeta.participants)
+                            ? groupMeta.participants
+                            : (groupMeta.participants.getModelsArray ? groupMeta.participants.getModelsArray() : []);
+                        if (Array.isArray(participants)) {
+                            for (const p of participants) {
+                                const pid = p.id?._serialized || p.id;
+                                if (pid === pJid) {
+                                    if (isValid(p.pushname))
+                                        foundName = p.pushname;
+                                    else if (isValid(p.notify))
+                                        foundName = p.notify;
+                                    if (!foundPhone)
+                                        foundPhone = p.number || null;
+                                    break;
+                                }
                             }
                         }
                     }
@@ -274,13 +284,18 @@ export async function extractParticipantNameAfterSync(client, groupId, participa
                 if (store.GroupMetadata) {
                     const groupMeta = store.GroupMetadata.get(gJid);
                     if (groupMeta && groupMeta.participants) {
-                        for (const p of groupMeta.participants) {
-                            const pIdStr = p.id?._serialized || p.id;
-                            if (pIdStr === pId) {
-                                const name = p.pushname || p.notify || p.name || p.contact?.pushname;
-                                const phone = p.number || p.contact?.number;
-                                if (isValidName(name)) {
-                                    return { name, phone, source: 'GroupMetadata' };
+                        const participants = Array.isArray(groupMeta.participants)
+                            ? groupMeta.participants
+                            : (groupMeta.participants.getModelsArray ? groupMeta.participants.getModelsArray() : []);
+                        if (Array.isArray(participants)) {
+                            for (const p of participants) {
+                                const pIdStr = p.id?._serialized || p.id;
+                                if (pIdStr === pId) {
+                                    const name = p.pushname || p.notify || p.name || p.contact?.pushname;
+                                    const phone = p.number || p.contact?.number;
+                                    if (isValidName(name)) {
+                                        return { name, phone, source: 'GroupMetadata' };
+                                    }
                                 }
                             }
                         }
@@ -354,19 +369,24 @@ export async function resolveLidToPhone(client, groupId, lid) {
                         if (store.GroupMetadata) {
                             const groupMeta = store.GroupMetadata.get(gJid);
                             if (groupMeta && groupMeta.participants) {
-                                for (const p of groupMeta.participants) {
-                                    const pId = p.id?._serialized || p.id;
-                                    if (pId === lidToResolve) {
-                                        if (p.number && /^\d+$/.test(p.number)) {
-                                            return { phone: p.number, name: p.pushname || p.notify, source: 'exact_match' };
+                                const participants = Array.isArray(groupMeta.participants)
+                                    ? groupMeta.participants
+                                    : (groupMeta.participants.getModelsArray ? groupMeta.participants.getModelsArray() : []);
+                                if (Array.isArray(participants)) {
+                                    for (const p of participants) {
+                                        const pId = p.id?._serialized || p.id;
+                                        if (pId === lidToResolve) {
+                                            if (p.number && /^\d+$/.test(p.number)) {
+                                                return { phone: p.number, name: p.pushname || p.notify, source: 'exact_match' };
+                                            }
                                         }
                                     }
-                                }
-                                for (const p of groupMeta.participants) {
-                                    const pId = p.id?._serialized || p.id;
-                                    const userPart = pId?.split('@')[0] || '';
-                                    if (userPart.includes(lidPrefix)) {
-                                        return { phone: userPart, name: p.pushname || p.notify, source: 'prefix_match' };
+                                    for (const p of participants) {
+                                        const pId = p.id?._serialized || p.id;
+                                        const userPart = pId?.split('@')[0] || '';
+                                        if (userPart.includes(lidPrefix)) {
+                                            return { phone: userPart, name: p.pushname || p.notify, source: 'prefix_match' };
+                                        }
                                     }
                                 }
                             }

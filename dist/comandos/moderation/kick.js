@@ -104,7 +104,7 @@ export default {
                 lastKickBy: normalizedAdmin,
                 lastKickByName: adminName
             });
-            await WarningService.logKick(groupId, targetPhone, reason);
+            await WarningService.logKick(groupId, targetPhone, reason, normalizedAdmin, adminName);
             if (quotedMsg && quotedMessageId) {
                 try {
                     const deleted = await quotedMsg.delete(true);

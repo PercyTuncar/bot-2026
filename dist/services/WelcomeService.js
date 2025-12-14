@@ -1,6 +1,6 @@
 import GroupRepository from '../repositories/GroupRepository.js';
 import MemberRepository from '../repositories/MemberRepository.js';
-import WelcomeImageService from './WelcomeImageService.js';
+import { welcomeImageService } from './WelcomeImageService.js';
 import { replacePlaceholders } from '../utils/formatter.js';
 import { config as envConfig } from '../config/environment.js';
 import logger from '../lib/logger.js';
@@ -67,15 +67,20 @@ export class WelcomeService {
                     if (store.GroupMetadata && store.GroupMetadata._index) {
                         for (const [, groupMeta] of store.GroupMetadata._index) {
                             if (groupMeta && groupMeta.participants) {
-                                for (const p of groupMeta.participants) {
-                                    const pId = p.id?._serialized || p.id;
-                                    if (pId === participantJid) {
-                                        if (isValid(p.pushname))
-                                            return { name: p.pushname, source: 'GroupMeta.pushname' };
-                                        if (isValid(p.notify))
-                                            return { name: p.notify, source: 'GroupMeta.notify' };
-                                        if (isValid(p.name))
-                                            return { name: p.name, source: 'GroupMeta.name' };
+                                const participants = Array.isArray(groupMeta.participants)
+                                    ? groupMeta.participants
+                                    : (groupMeta.participants.getModelsArray ? groupMeta.participants.getModelsArray() : []);
+                                if (Array.isArray(participants)) {
+                                    for (const p of participants) {
+                                        const pId = p.id?._serialized || p.id;
+                                        if (pId === participantJid) {
+                                            if (isValid(p.pushname))
+                                                return { name: p.pushname, source: 'GroupMeta.pushname' };
+                                            if (isValid(p.notify))
+                                                return { name: p.notify, source: 'GroupMeta.notify' };
+                                            if (isValid(p.name))
+                                                return { name: p.name, source: 'GroupMeta.name' };
+                                        }
                                     }
                                 }
                             }
@@ -164,6 +169,16 @@ export class WelcomeService {
                 if (!jidsToTry.includes(phoneJid))
                     jidsToTry.push(phoneJid);
             }
+            if (displayName && /^\d{8,}$/.test(displayName)) {
+                const resolvedPhoneJidFromName = `${displayName}@c.us`;
+                if (!jidsToTry.includes(resolvedPhoneJidFromName)) {
+                    jidsToTry.push(resolvedPhoneJidFromName);
+                    if (cleanNumberForText !== displayName) {
+                        logger.info(`🔄 [Welcome] Usando número resuelto del displayName: ${displayName} (en lugar de ${cleanNumberForText})`);
+                        cleanNumberForText = displayName;
+                    }
+                }
+            }
             for (const jidToTry of jidsToTry) {
                 if (!nameForDisplay) {
                     nameForDisplay = await this.getNameForMention(sock, jidToTry);
@@ -184,15 +199,20 @@ export class WelcomeService {
                             const groupMeta = store.GroupMetadata.get(gJid);
                             if (!groupMeta?.participants)
                                 return null;
-                            for (const p of groupMeta.participants) {
-                                const pId = p.id?._serialized || p.id;
-                                if (pId === pJid || pId?.includes(pJid?.split('@')[0])) {
-                                    if (p.pushname)
-                                        return p.pushname;
-                                    if (p.notify)
-                                        return p.notify;
-                                    if (p.name)
-                                        return p.name;
+                            const participants = Array.isArray(groupMeta.participants)
+                                ? groupMeta.participants
+                                : (groupMeta.participants.getModelsArray ? groupMeta.participants.getModelsArray() : []);
+                            if (Array.isArray(participants)) {
+                                for (const p of participants) {
+                                    const pId = p.id?._serialized || p.id;
+                                    if (pId === pJid || pId?.includes(pJid?.split('@')[0])) {
+                                        if (p.pushname)
+                                            return p.pushname;
+                                        if (p.notify)
+                                            return p.notify;
+                                        if (p.name)
+                                            return p.name;
+                                    }
                                 }
                             }
                             return null;
@@ -218,6 +238,23 @@ export class WelcomeService {
                     nameForDisplay = contactName;
                 }
             }
+            if (!nameForDisplay && sock && cleanNumberForText && /^\d+$/.test(cleanNumberForText)) {
+                try {
+                    const phoneJid = `${cleanNumberForText}@c.us`;
+                    logger.info(`🔍 [Welcome] Intentando getContactById con número resuelto: ${phoneJid}`);
+                    const resolvedContact = await sock.getContactById(phoneJid);
+                    if (resolvedContact) {
+                        const contactName = resolvedContact.pushname || resolvedContact.name || resolvedContact.shortName;
+                        if (contactName && contactName !== 'undefined' && contactName !== 'null' && contactName !== 'Usuario') {
+                            nameForDisplay = contactName;
+                            logger.info(`✅ [Welcome] Nombre obtenido de getContactById(${phoneJid}): "${nameForDisplay}"`);
+                        }
+                    }
+                }
+                catch (e) {
+                    logger.debug(`[Welcome] getContactById con número resuelto falló: ${e.message}`);
+                }
+            }
             if (!nameForDisplay || nameForDisplay === 'Usuario' || nameForDisplay === 'undefined' || nameForDisplay === 'Unknown') {
                 nameForDisplay = cleanNumberForText;
                 logger.info(`📱 [Welcome] Usando número de teléfono como nombre: "${nameForDisplay}"`);
@@ -237,9 +274,7 @@ export class WelcomeService {
             if (envConfig.features?.welcomeImages && groupConfig.features?.welcomeImages !== false) {
                 try {
                     if (envConfig.cloudinary?.welcomeBgUrl) {
-                        const profilePicUrl = await sock.getProfilePicUrl(waId).catch(() => null);
-                        logger.info(`🖼️ Generando imagen de bienvenida para "${nameForDisplay}"`);
-                        imageBuffer = await WelcomeImageService.generateWelcomeImage(profilePicUrl || '', nameForDisplay, group?.name || 'el grupo');
+                        imageBuffer = await welcomeImageService.createWelcomeImage(finalMentionJid, nameForDisplay, sock);
                     }
                 }
                 catch (error) {

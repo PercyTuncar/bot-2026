@@ -1,0 +1,106 @@
+{
+    "titles": [
+        "¡MATCH DEL DÍA!",
+        "💖 PAREJA PERFECTA 💖",
+        "✨ AMOR A PRIMERA VISTA ✨",
+        "🔥 CONEXIÓN ESPECIAL 🔥",
+        "💫 DESTINO UNIDO 💫"
+    ],
+    "randomPhrases": [
+        "El universo los ha unido hoy...",
+        "Las estrellas conspiraron para este momento",
+        "El destino tenía otros planes para ustedes",
+        "El amor llegó cuando menos lo esperaban",
+        "Dos almas que se encontraron en el camino",
+        "La química entre ustedes es innegable",
+        "El corazón sabe lo que quiere",
+        "Cuando el amor llega, no hay quien lo detenga",
+        "Dos personas, un mismo latido",
+        "El amor no conoce fronteras"
+    ],
+    "wishes": [
+        "¡Que vivan felices para siempre!",
+        "¡Les deseamos todo el amor del mundo!",
+        "¡Que su amor brille como mil soles!",
+        "¡El grupo les desea mucha felicidad!",
+        "¡Que cada día sea mejor que el anterior!",
+        "¡Que el amor los guíe siempre!",
+        "¡Felicidades a la pareja del día!",
+        "¡Que su historia de amor apenas comienza!",
+        "¡Les deseamos un futuro lleno de amor!",
+        "¡Que sean muy felices juntos!"
+    ],
+    "compatibility": {
+        "low": {
+            "range": [
+                0,
+                40
+            ],
+            "phrases": [
+                "Quizás no era el momento indicado...",
+                "El amor a veces toma caminos diferentes",
+                "No todos los matching son perfectos",
+                "El destino tiene otros planes para ustedes",
+                "A veces el universo dice 'todavía no'"
+            ],
+            "emoji": "💔"
+        },
+        "medium": {
+            "range": [
+                41,
+                70
+            ],
+            "phrases": [
+                "El amor requiere paciencia 💪",
+                "Con esfuerzo, todo es posible",
+                "Tienen potencial, ¡sigan intentando!",
+                "El amor se construye día a día",
+                "No se rindan, hay esperanza"
+            ],
+            "emoji": "💛"
+        },
+        "high": {
+            "range": [
+                71,
+                100
+            ],
+            "phrases": [
+                "¡Es un match perfecto! 🎉",
+                "¡Nacieron el uno para el otro!",
+                "¡El amor está en el aire!",
+                "¡Compatibilidad extraordinaria!",
+                "¡Son almas gemelas!"
+            ],
+            "emoji": "❤️‍🔥"
+        }
+    },
+    "emojis": [
+        "💖",
+        "💕",
+        "💗",
+        "💓",
+        "💞",
+        "💘",
+        "❤️",
+        "🧡",
+        "💛",
+        "💚",
+        "💙",
+        "💜",
+        "🖤",
+        "🤍",
+        "💝",
+        "😍",
+        "🥰",
+        "😘",
+        "💋",
+        "🌹",
+        "🌷",
+        "🌸",
+        "✨",
+        "💫",
+        "⭐",
+        "🔥",
+        "💯"
+    ]
+}
