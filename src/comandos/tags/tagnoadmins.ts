@@ -32,24 +32,42 @@ export default {
       // Limitar a 100 menciones
       const mentions = nonAdmins.slice(0, 100).map(p => p?.id?._serialized || p?.id);
 
-      let text = args.join(' ');
-      let media = null;
-
-      if (msg.hasMedia) {
-        media = await msg.downloadMedia();
-      } else if (msg.hasQuotedMsg) {
-        const quoted = await msg.getQuotedMessage();
-        if (quoted.hasMedia) {
-          media = await quoted.downloadMedia();
-          // Si no hay texto en el comando, usar el del mensaje citado o nada
-          if (!text) text = quoted.body || ''; 
-        } else {
-          // Si se cita un mensaje de texto y no hay argumentos, usar el texto citado
-          if (!text) text = quoted.body || '¡Atención miembros!';
-        }
-      } else {
-        if (!text) text = '¡Atención miembros!';
+      // Construir texto preservando saltos de línea y formato del mensaje original
+      const body = msg.body || '';
+      const cmdRegex = /^\s*([.\!\/#])?tagnoadmins\b/i;
+      let text = '';
+      if (cmdRegex.test(body)) {
+        text = body.replace(cmdRegex, '').trim();
       }
+      if (!text && args && args.length) {
+        text = args.join(' ');
+      }
+
+      // Manejo robusto de media (descarga puede fallar dependiendo del tipo de mensaje)
+      let media = null;
+      try {
+        if (msg.hasMedia) {
+          media = await msg.downloadMedia();
+        }
+      } catch (e) {
+        logger.warn('tagnoadmins: downloadMedia() falló en msg', e);
+      }
+      
+      if (!media && msg.hasQuotedMsg) {
+        try {
+          const quoted = await msg.getQuotedMessage();
+          if (quoted?.hasMedia) {
+            media = await quoted.downloadMedia();
+          }
+          if (!text) {
+            text = quoted?.body || '';
+          }
+        } catch (e) {
+          logger.warn('tagnoadmins: manejo de mensaje citado falló', e);
+        }
+      }
+      
+      if (!text) text = '¡Atención miembros!';
 
       // Enviar mensaje con menciones fantasmas (sin lista visible)
       if (media) {

@@ -169,16 +169,6 @@ export class WelcomeService {
                 if (!jidsToTry.includes(phoneJid))
                     jidsToTry.push(phoneJid);
             }
-            if (displayName && /^\d{8,}$/.test(displayName)) {
-                const resolvedPhoneJidFromName = `${displayName}@c.us`;
-                if (!jidsToTry.includes(resolvedPhoneJidFromName)) {
-                    jidsToTry.push(resolvedPhoneJidFromName);
-                    if (cleanNumberForText !== displayName) {
-                        logger.info(`🔄 [Welcome] Usando número resuelto del displayName: ${displayName} (en lugar de ${cleanNumberForText})`);
-                        cleanNumberForText = displayName;
-                    }
-                }
-            }
             for (const jidToTry of jidsToTry) {
                 if (!nameForDisplay) {
                     nameForDisplay = await this.getNameForMention(sock, jidToTry);
@@ -238,23 +228,6 @@ export class WelcomeService {
                     nameForDisplay = contactName;
                 }
             }
-            if (!nameForDisplay && sock && cleanNumberForText && /^\d+$/.test(cleanNumberForText)) {
-                try {
-                    const phoneJid = `${cleanNumberForText}@c.us`;
-                    logger.info(`🔍 [Welcome] Intentando getContactById con número resuelto: ${phoneJid}`);
-                    const resolvedContact = await sock.getContactById(phoneJid);
-                    if (resolvedContact) {
-                        const contactName = resolvedContact.pushname || resolvedContact.name || resolvedContact.shortName;
-                        if (contactName && contactName !== 'undefined' && contactName !== 'null' && contactName !== 'Usuario') {
-                            nameForDisplay = contactName;
-                            logger.info(`✅ [Welcome] Nombre obtenido de getContactById(${phoneJid}): "${nameForDisplay}"`);
-                        }
-                    }
-                }
-                catch (e) {
-                    logger.debug(`[Welcome] getContactById con número resuelto falló: ${e.message}`);
-                }
-            }
             if (!nameForDisplay || nameForDisplay === 'Usuario' || nameForDisplay === 'undefined' || nameForDisplay === 'Unknown') {
                 nameForDisplay = cleanNumberForText;
                 logger.info(`📱 [Welcome] Usando número de teléfono como nombre: "${nameForDisplay}"`);
@@ -274,7 +247,7 @@ export class WelcomeService {
             if (envConfig.features?.welcomeImages && groupConfig.features?.welcomeImages !== false) {
                 try {
                     if (envConfig.cloudinary?.welcomeBgUrl) {
-                        imageBuffer = await welcomeImageService.createWelcomeImage(finalMentionJid, nameForDisplay, sock);
+                        imageBuffer = await welcomeImageService.createWelcomeImage(waId, nameForDisplay, sock);
                     }
                 }
                 catch (error) {

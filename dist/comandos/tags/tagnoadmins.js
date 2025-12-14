@@ -23,27 +23,40 @@ export default {
                 return;
             }
             const mentions = nonAdmins.slice(0, 100).map(p => p?.id?._serialized || p?.id);
-            let text = args.join(' ');
+            const body = msg.body || '';
+            const cmdRegex = /^\s*([.\!\/#])?tagnoadmins\b/i;
+            let text = '';
+            if (cmdRegex.test(body)) {
+                text = body.replace(cmdRegex, '').trim();
+            }
+            if (!text && args && args.length) {
+                text = args.join(' ');
+            }
             let media = null;
-            if (msg.hasMedia) {
-                media = await msg.downloadMedia();
-            }
-            else if (msg.hasQuotedMsg) {
-                const quoted = await msg.getQuotedMessage();
-                if (quoted.hasMedia) {
-                    media = await quoted.downloadMedia();
-                    if (!text)
-                        text = quoted.body || '';
-                }
-                else {
-                    if (!text)
-                        text = quoted.body || '¡Atención miembros!';
+            try {
+                if (msg.hasMedia) {
+                    media = await msg.downloadMedia();
                 }
             }
-            else {
-                if (!text)
-                    text = '¡Atención miembros!';
+            catch (e) {
+                logger.warn('tagnoadmins: downloadMedia() falló en msg', e);
             }
+            if (!media && msg.hasQuotedMsg) {
+                try {
+                    const quoted = await msg.getQuotedMessage();
+                    if (quoted?.hasMedia) {
+                        media = await quoted.downloadMedia();
+                    }
+                    if (!text) {
+                        text = quoted?.body || '';
+                    }
+                }
+                catch (e) {
+                    logger.warn('tagnoadmins: manejo de mensaje citado falló', e);
+                }
+            }
+            if (!text)
+                text = '¡Atención miembros!';
             if (media) {
                 await sock.sendMessage(targetJid, media, { caption: text, mentions });
             }
