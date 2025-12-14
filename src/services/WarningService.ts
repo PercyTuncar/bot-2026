@@ -13,18 +13,18 @@ export class WarningService {
    */
   static async addWarning(groupId: string, phone: string, byPhone: string, byName: string, reason = '') {
     const db = getFirestore();
-
+    
     // Obtener configuración del grupo para maxWarnings
     const config = await GroupRepository.getConfig(groupId);
     const maxWarnings = config?.limits?.maxWarnings || 3;
-
+    
     // MEJORADO: Buscar miembro con múltiples estrategias
     // El phone puede ser: número normal, LID sin @lid, o número extraído de LID
     logger.info(`[WarningService] Looking for member: phone=${phone}`);
-
+    
     // Intentar buscar por phone y también por LID
     let found = await MemberRepository.findByPhoneOrLid(groupId, phone, phone);
-
+    
     // Si no encuentra, intentar con normalizePhone
     if (!found) {
       const normalized = normalizePhone(phone);
@@ -33,10 +33,10 @@ export class WarningService {
         found = await MemberRepository.findByPhoneOrLid(groupId, normalized, normalized);
       }
     }
-
+    
     let member = found ? found.data : null;
     let docId = found?.docId;
-
+    
     // Auto-registrar si no existe
     if (!member) {
       docId = normalizePhone(phone);
@@ -45,7 +45,7 @@ export class WarningService {
         docId = phone.replace('@lid', '').split(':')[0];
       }
       if (!docId) docId = phone;
-
+      
       logger.info(`[WarningService] Auto-registering member ${docId} for warning`);
       member = await MemberRepository.save(groupId, {
         phone: docId,
@@ -57,15 +57,15 @@ export class WarningService {
         warnHistory: []
       });
     }
-
+    
     if (!docId) {
       logger.error(`[WarningService] Cannot add warning: no valid docId for ${phone}`);
       throw new Error('No se pudo identificar al usuario para agregar advertencia');
     }
-
+    
     const currentWarnings = member.warnings || 0;
     const newWarnings = currentWarnings + 1;
-
+    
     // Crear entrada de historial según documentación
     const newWarning = {
       type: 'WARN' as const,
@@ -88,7 +88,7 @@ export class WarningService {
 
     // Determinar si debe ser expulsado (>= maxWarnings)
     const shouldKick = newWarnings >= maxWarnings;
-
+    
     if (shouldKick) {
       logger.info(`[WarningService] User ${phone} reached ${newWarnings}/${maxWarnings} warnings - SHOULD BE KICKED`);
     }
@@ -107,7 +107,7 @@ export class WarningService {
   static async removeWarning(groupId: string, phone: string, byPhone?: string, byName?: string) {
     // Buscar por phone o LID
     let found = await MemberRepository.findByPhoneOrLid(groupId, phone, phone);
-
+    
     // Si no encuentra, intentar con normalizePhone
     if (!found) {
       const normalized = normalizePhone(phone);
@@ -115,20 +115,20 @@ export class WarningService {
         found = await MemberRepository.findByPhoneOrLid(groupId, normalized, normalized);
       }
     }
-
+    
     let member = found ? found.data : null;
     let docId = found?.docId;
-
+    
     if (!member) {
       throw new Error('Usuario no encontrado');
     }
-
+    
     if (!docId) {
       throw new Error('No se pudo identificar al usuario');
     }
 
     const warnHistory = member.warnHistory ? [...member.warnHistory] : [];
-
+    
     // Registrar reseteo completo de advertencias (tipo UNWARN con razón específica)
     warnHistory.push({
       type: 'UNWARN' as const,
@@ -153,7 +153,7 @@ export class WarningService {
     });
 
     logger.info(`[WarningService] Warnings reset for ${phone} (docId: ${docId}) in group ${groupId}. Remaining: 0`);
-
+    
     return {
       warnings: 0,
       history: warnHistory
@@ -179,7 +179,7 @@ export class WarningService {
     const found = await MemberRepository.findByPhoneOrLid(groupId, phone, phone);
     const member = found ? found.data : null;
     let docId = found?.docId;
-
+    
     // Si no existe el miembro, crearlo para guardar el registro
     // Usar normalizePhone solo para nuevos documentos
     if (!member) {
@@ -204,26 +204,15 @@ export class WarningService {
     }
 
     const warnHistory = member?.warnHistory ? [...member.warnHistory] : [];
-
+    
     // Agregar evento KICK al historial con información completa
-    // IMPORTANTE: Firestore no acepta valores undefined, usar valores por defecto
     warnHistory.push({
       type: 'KICK' as const,
-      reason: reason || 'Expulsado por un administrador',
-      byPhone: byPhone ? (normalizePhone(byPhone) || byPhone) : 'admin',
-      byName: byName || 'Administrador',
+      reason,
+      byPhone: byPhone ? (normalizePhone(byPhone) || byPhone) : undefined,
+      byName: byName || undefined,
       timestamp: getNow()
     });
-
-    // CRÍTICO: Limpiar cualquier entrada existente con valores undefined
-    // Esto corrige datos antiguos que fueron guardados con el bug
-    const cleanedHistory = warnHistory.map(entry => ({
-      type: entry.type || 'UNKNOWN',
-      reason: entry.reason || 'Sin motivo especificado',
-      byPhone: entry.byPhone || 'system',
-      byName: entry.byName || 'Sistema',
-      timestamp: entry.timestamp || getNow()
-    }));
 
     // Incrementar contador de kicks totales
     const totalKicks = (member?.totalKicks || 0) + 1;
@@ -231,7 +220,7 @@ export class WarningService {
     // Resetear warnings a 0 después de expulsión
     await MemberRepository.update(groupId, docId, {
       warnings: 0,
-      warnHistory: cleanedHistory,
+      warnHistory,
       totalKicks,
       isMember: false,
       kickedAt: getNow()
@@ -247,15 +236,15 @@ export class WarningService {
     const found = await MemberRepository.findByPhoneOrLid(groupId, phone, phone);
     const member = found ? found.data : null;
     const docId = found?.docId || normalizePhone(phone);
-
+    
     // Si no hay docId válido, no podemos actualizar
     if (!docId) {
       logger.warn(`[WarningService] Cannot log exit: no valid docId for ${phone}`);
       return;
     }
-
+    
     const warnHistory = member?.warnHistory ? [...member.warnHistory] : [];
-
+    
     // Agregar evento EXIT al historial
     warnHistory.push({
       type: 'EXIT' as const,
@@ -282,7 +271,7 @@ export class WarningService {
   static async getWarnings(groupId: string, phone: string) {
     // Buscar por phone o LID
     let found = await MemberRepository.findByPhoneOrLid(groupId, phone, phone);
-
+    
     // Si no encuentra, intentar con normalizePhone
     if (!found) {
       const normalized = normalizePhone(phone);
@@ -290,9 +279,9 @@ export class WarningService {
         found = await MemberRepository.findByPhoneOrLid(groupId, normalized, normalized);
       }
     }
-
+    
     const member = found ? found.data : null;
-
+    
     if (!member) {
       return null;
     }

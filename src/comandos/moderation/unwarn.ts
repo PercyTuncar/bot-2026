@@ -22,10 +22,10 @@ export default {
     } catch (e) {
       logger.warn(`[UNWARN] Could not get chat: ${e.message}`);
     }
-
+    
     // Usar getTargetUser que soporta quoted message, menciones y LIDs
     const target = await getTargetUser(msg, chat);
-
+    
     if (!target) {
       await sock.sendMessage(replyJid, formatError(
         'Debes mencionar a un usuario (@usuario) o responder a su mensaje con .unwarn'
@@ -44,27 +44,24 @@ export default {
     try {
       // Resetear advertencias a 0 con registro
       const result = await WarningService.resetWarnings(
-        groupId,
+        groupId, 
         targetPhone,
         normalizedAdmin,
         msg.pushName || normalizedAdmin
       );
-
+      
       // Obtener configuración para maxWarnings
       const config = await ConfigService.getGroupConfig(groupId);
       const maxWarnings = config?.limits?.maxWarnings || 3;
-
-      let unwarnMessage = `\n\n✅ *ADVERTENCIAS RESETEADAS* ✅\n\n`;
-      unwarnMessage += `👤 *Usuario:* @${target.phone}\n`;
-      unwarnMessage += `📛 *Nombre:* ${targetName}\n\n`;
-      unwarnMessage += `━━━━━━━━━━━━━━━━━━━━\n`;
-      unwarnMessage += `📊 *Estado actual:*\n`;
-      unwarnMessage += `> _Advertencias: 0/${maxWarnings}_\n`;
-      unwarnMessage += `> _Historial limpio_\n`;
-      unwarnMessage += `━━━━━━━━━━━━━━━━━━━━\n\n`;
-      unwarnMessage += `🎉 _El usuario tiene un nuevo comienzo_`;
-
-      await sock.sendMessage(replyJid, unwarnMessage, { mentions: [mentionJid] });
+      
+      await sock.sendMessage(
+        replyJid,
+        formatSuccess(
+          `Se reseteó el contador de advertencias de @${target.phone} (${targetName})\n\n` +
+          `📊 *Advertencias actuales:* ${result.warnings}/${maxWarnings}`
+        ),
+        { mentions: [mentionJid] }
+      );
     } catch (error) {
       logger.error('[UNWARN] Error in unwarn command:', error);
       await sock.sendMessage(replyJid, formatError(error.message || 'Error al quitar advertencia'));

@@ -33,21 +33,47 @@ export default {
             let user2 = null;
             let compatibility = undefined;
             let isRandomMatch = true;
-            const mentions = await msg.getMentions();
+            let mentions = [];
+            try {
+                mentions = await msg.getMentions() || [];
+                logger.info(`[MATCH] getMentions returned ${mentions.length} mentions`);
+            }
+            catch (e) {
+                logger.warn(`[MATCH] getMentions failed: ${e.message}`);
+            }
+            if (mentions.length < 2 && msg.mentionedIds && msg.mentionedIds.length >= 2) {
+                logger.info(`[MATCH] Using mentionedIds fallback: ${msg.mentionedIds.length} mentions`);
+                for (const mentionId of msg.mentionedIds.slice(0, 2)) {
+                    try {
+                        const contact = await sock.getContactById(mentionId);
+                        if (contact) {
+                            mentions.push(contact);
+                        }
+                    }
+                    catch (e) {
+                        mentions.push({
+                            id: { _serialized: mentionId },
+                            number: mentionId.replace('@c.us', '').replace('@lid', ''),
+                            pushname: null,
+                            name: null
+                        });
+                    }
+                }
+            }
             if (mentions && mentions.length >= 2) {
                 isRandomMatch = false;
                 compatibility = Math.floor(Math.random() * 101);
                 const contact1 = mentions[0];
                 const contact2 = mentions[1];
                 user1 = {
-                    id: contact1.id._serialized || contact1.number,
+                    id: contact1.id?._serialized || contact1.id || contact1.number,
                     name: contact1.pushname || contact1.name || contact1.number || 'Usuario 1',
-                    jid: contact1.id._serialized
+                    jid: contact1.id?._serialized || contact1.id || `${contact1.number}@c.us`
                 };
                 user2 = {
-                    id: contact2.id._serialized || contact2.number,
+                    id: contact2.id?._serialized || contact2.id || contact2.number,
                     name: contact2.pushname || contact2.name || contact2.number || 'Usuario 2',
-                    jid: contact2.id._serialized
+                    jid: contact2.id?._serialized || contact2.id || `${contact2.number}@c.us`
                 };
                 logger.info(`[MATCH] Compatibility mode: ${user1.name} vs ${user2.name} = ${compatibility}%`);
             }

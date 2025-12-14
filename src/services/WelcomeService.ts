@@ -241,21 +241,6 @@ export class WelcomeService {
         if (!jidsToTry.includes(phoneJid)) jidsToTry.push(phoneJid);
       }
 
-      // CRÍTICO: Si displayName es un número de teléfono puro (fue resuelto previamente),
-      // usarlo también para buscar el nombre del contacto
-      // Esto es importante porque displayName puede contener el teléfono real resuelto de un LID
-      if (displayName && /^\d{8,}$/.test(displayName)) {
-        const resolvedPhoneJidFromName = `${displayName}@c.us`;
-        if (!jidsToTry.includes(resolvedPhoneJidFromName)) {
-          jidsToTry.push(resolvedPhoneJidFromName);
-          // También actualizar cleanNumberForText al número real
-          if (cleanNumberForText !== displayName) {
-            logger.info(`🔄 [Welcome] Usando número resuelto del displayName: ${displayName} (en lugar de ${cleanNumberForText})`);
-            cleanNumberForText = displayName;
-          }
-        }
-      }
-
       for (const jidToTry of jidsToTry) {
         if (!nameForDisplay) {
           nameForDisplay = await this.getNameForMention(sock, jidToTry);
@@ -321,29 +306,7 @@ export class WelcomeService {
         }
       }
 
-      // 2.5 ESTRATEGIA CLAVE: Usar el número de teléfono resuelto para obtener el contacto
-      // Si tenemos cleanNumberForText (el número real), podemos usar getContactById
-      // Esta es la estrategia más confiable porque WhatsApp tiene mejor data para phone@c.us que para LIDs
-      if (!nameForDisplay && sock && cleanNumberForText && /^\d+$/.test(cleanNumberForText)) {
-        try {
-          const phoneJid = `${cleanNumberForText}@c.us`;
-          logger.info(`🔍 [Welcome] Intentando getContactById con número resuelto: ${phoneJid}`);
-
-          const resolvedContact = await sock.getContactById(phoneJid);
-          if (resolvedContact) {
-            // Priorizar pushname (nombre de perfil), luego name, luego shortName
-            const contactName = resolvedContact.pushname || resolvedContact.name || resolvedContact.shortName;
-            if (contactName && contactName !== 'undefined' && contactName !== 'null' && contactName !== 'Usuario') {
-              nameForDisplay = contactName;
-              logger.info(`✅ [Welcome] Nombre obtenido de getContactById(${phoneJid}): "${nameForDisplay}"`);
-            }
-          }
-        } catch (e: any) {
-          logger.debug(`[Welcome] getContactById con número resuelto falló: ${e.message}`);
-        }
-      }
-
-      // 2.6 CRÍTICO: Siempre usar el número de teléfono como fallback final
+      // 2.5 CRÍTICO: Siempre usar el número de teléfono como fallback final
       // NUNCA usar "Usuario" o "Unknown" - es preferible mostrar el número
       if (!nameForDisplay || nameForDisplay === 'Usuario' || nameForDisplay === 'undefined' || nameForDisplay === 'Unknown') {
         // Usar el número limpio (sin @lid ni @c.us)
@@ -380,12 +343,11 @@ export class WelcomeService {
         try {
           if (envConfig.cloudinary?.welcomeBgUrl) {
             // DELEGAMOS la lógica de obtención de imagen al servicio especializado
-            // Usamos finalMentionJid (el ID de teléfono resuelto) para mejor compatibilidad con getProfilePicUrl
-            // Si no pudimos resolver a teléfono, waId será el fallback
+            // Esto asegura el "algoritmo perfecto" que prioriza la foto real y maneja fallbacks
             imageBuffer = await welcomeImageService.createWelcomeImage(
-              finalMentionJid, // ID preferido para buscar foto (phone@c.us > LID)
-              nameForDisplay,  // Nombre para mostrar y semilla de avatar
-              sock             // Cliente para fetching avanzado
+              waId,           // ID para buscar foto (LID o Phone)
+              nameForDisplay, // Nombre para mostrar y semilla de avatar
+              sock            // Cliente para fetching avanzado
             );
           }
         } catch (error) {

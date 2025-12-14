@@ -45,11 +45,7 @@ export function checkLevelUp(oldPoints: number, newPoints: number, levels: Level
       leveled: true,
       oldLevel,
       newLevel,
-      message: `\n\n🏆 *¡SUBIDA DE NIVEL!* 🏆\n\n` +
-        `⬆️ Has alcanzado el nivel *${newLevel.level}*\n` +
-        `🎖️ Rango: *${newLevel.name}*\n` +
-        `💎 Puntos: *${newPoints}*\n\n` +
-        `¡Felicitaciones! 🎊`
+      message: `🎉 *¡NIVEL ALCANZADO!*\n\n¡Has subido a *${newLevel.name}*!\nNivel ${newLevel.level} • ${newPoints} puntos`
     };
   }
 
@@ -65,7 +61,7 @@ export function checkLevelUp(oldPoints: number, newPoints: number, levels: Level
 export function getLevelProgress(points: number, levels: LevelConfig[] = DEFAULT_GROUP_CONFIG.levels) {
   const currentLevel = calculateLevel(points, levels);
   const sortedLevels = [...levels].sort((a, b) => a.minPoints - b.minPoints);
-
+  
   const currentIndex = sortedLevels.findIndex(l => l.level === currentLevel.level);
   const nextLevel = sortedLevels[currentIndex + 1];
 

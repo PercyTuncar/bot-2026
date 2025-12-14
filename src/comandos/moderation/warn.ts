@@ -23,10 +23,10 @@ export default {
     } catch (e) {
       logger.warn(`[WARN] Could not get chat: ${e.message}`);
     }
-
+    
     // Usar getTargetUser que soporta quoted message, menciones y LIDs
     const target = await getTargetUser(msg, chat);
-
+    
     if (!target) {
       await sock.sendMessage(replyJid, formatError(
         'Debes mencionar a un usuario (@usuario) o responder a su mensaje con .warn'
@@ -51,8 +51,8 @@ export default {
     // Verificar si el target es admin (no se puede advertir admins)
     if (chat && chat.isGroup) {
       try {
-        const participant = chat.participants?.find(p =>
-          p.id._serialized === mentionJid ||
+        const participant = chat.participants?.find(p => 
+          p.id._serialized === mentionJid || 
           p.id._serialized === `${targetPhone}@c.us` ||
           p.id._serialized === `${targetPhone}@lid`
         );
@@ -78,29 +78,20 @@ export default {
         reason
       );
 
-      // Enviar mensaje de advertencia con diseño mejorado
-      const progressBar = '⚠️'.repeat(result.warnings) + '▫️'.repeat(result.maxWarnings - result.warnings);
-
-      let warnMessage = `\n\n⚠️ *ADVERTENCIA REGISTRADA* ⚠️\n\n`;
-      warnMessage += `👤 *Usuario:* @${target.phone}\n`;
-      warnMessage += `📛 *Nombre:* ${targetName}\n\n`;
-      warnMessage += `━━━━━━━━━━━━━━━━━━━━\n`;
-      warnMessage += `📄 *Motivo:*\n`;
-      warnMessage += `> _${reason}_\n`;
-      warnMessage += `━━━━━━━━━━━━━━━━━━━━\n\n`;
-      warnMessage += `📊 *Advertencias:* ${result.warnings}/${result.maxWarnings}\n`;
-      warnMessage += `${progressBar}\n`;
-
-      if (result.warnings >= result.maxWarnings - 1 && !result.shouldKick) {
-        warnMessage += `\n⚡ _¡Próxima advertencia = expulsión!_`;
-      }
-
-      await sock.sendMessage(replyJid, warnMessage, { mentions: [mentionJid] });
+      // Enviar mensaje de advertencia
+      await sock.sendMessage(replyJid,
+        formatSuccess(
+          `@${target.phone} (${targetName}) ha sido advertido\n\n` +
+          `📄 *Razón:* ${reason}\n\n` +
+          `📊 *Advertencias:* ${result.warnings}/${result.maxWarnings}`
+        ),
+        { mentions: [mentionJid] }
+      );
 
       // Auto-kick si alcanzó el límite de advertencias
       if (result.shouldKick) {
         logger.info(`[WARN] User ${targetPhone} reached warning limit. Executing kick...`);
-
+        
         const targetJid = groupJid || (groupId.includes('@') ? groupId : `${groupId}@g.us`);
         let kicked = false;
         try {
@@ -112,7 +103,7 @@ export default {
               return pid === mentionJid || pid === `${targetPhone}@c.us` || pid === `${targetPhone}@lid`;
             });
             kickId = participantMatch?.id?._serialized || participantMatch?.id || mentionJid;
-          } catch { }
+          } catch {}
           await chatForKick.removeParticipants([kickId]);
           kicked = true;
           logger.info(`[WARN] removeParticipants succeeded for ${kickId}`);

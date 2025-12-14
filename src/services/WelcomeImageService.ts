@@ -64,43 +64,50 @@ class WelcomeImageService {
       let avatarUrl: string | null = null;
       let usingMultiavatar = true;
 
-      if (client && userId) {
+      if (client) {
         try {
-          // Asegurar formato correcto del ID
-          let contactId = userId;
-          if (!contactId.includes('@')) {
-            contactId = `${contactId}@c.us`;
+          // Estrategia de reintentos escalonada para la foto de perfil
+          // 1. Intentar ID original
+          avatarUrl = await client.getProfilePicUrl(userId).catch(() => null);
+
+          // 2. Si falló y es LID, intentar con ID de teléfono
+          if (!avatarUrl && userId.includes('@lid')) {
+            try {
+              const numberId = await client.getNumberId(userId.replace('@lid', '').replace('@c.us', ''));
+              if (numberId && numberId._serialized) {
+                logger.debug(`🖼️ Trying phone JID for profile pic: ${numberId._serialized}`);
+                avatarUrl = await client.getProfilePicUrl(numberId._serialized).catch(() => null);
+              }
+            } catch (e) { }
           }
 
-          logger.info(`🖼️ Fetching profile picture for: ${contactId}`);
+          // 3. Fallback final: Esperar un poco y reintentar (útil para sync lag)
+          if (!avatarUrl) {
+            await new Promise(r => setTimeout(r, 500));
+            avatarUrl = await client.getProfilePicUrl(userId).catch(() => null);
+          }
 
-          // Según docs.wwebjs.dev: getProfilePicUrl(contactId) → Promise<string>
-          // Retorna la URL de la foto de perfil si la privacidad lo permite
-          const profilePicUrl = await client.getProfilePicUrl(contactId);
-
-          if (profilePicUrl) {
-            avatarUrl = profilePicUrl;
+          if (avatarUrl) {
             usingMultiavatar = false;
-            logger.info(`✅ Profile pic URL obtained successfully`);
-          } else {
-            logger.info(`ℹ️ No profile pic for ${contactId} (null returned)`);
+            logger.info(`✅ Profile pic found for ${userName || userId}`);
           }
         } catch (e: any) {
-          // getProfilePicUrl lanza error si la privacidad no lo permite o el usuario no tiene foto
-          logger.info(`ℹ️ Could not get profile pic: ${e.message || 'privacy/no photo'}`);
+          logger.warn(`⚠️ Failed to fetch profile pic: ${e.message}`);
         }
       }
 
-      // Si no hay foto real, usar Multiavatar con semilla dinámica
+      // Si no hay foto, usar Multiavatar con semilla dinámica
       if (!avatarUrl) {
-        // Usar userName si existe y es válido, sino usar el userId limpio
-        let seed = userName || userId || `user_${Date.now()}`;
-        // Limpiar valores inválidos para tener variedad
-        if (seed === 'undefined' || seed === 'null' || seed === 'Usuario' || seed === 'Unknown') {
-          seed = `user_${Date.now()}`;
+        // Usar userName si existe, sino userId
+        // CRITICO: Para "variar", aseguramos que la semilla no sea "undefined" o vacía
+        let seed = userName || userId;
+        if (!seed || seed === 'undefined' || seed === 'null') {
+          seed = `user_${Math.floor(Math.random() * 100000)}`;
         }
-        // Remover sufijos de WhatsApp para una semilla limpia
-        seed = seed.replace(/@c\.us$/, '').replace(/@lid$/, '').replace(/@s\.whatsapp\.net$/, '');
+
+        // Si el usuario quiere variedad "random", podemos agregar un componente aleatorio
+        // aunque lo ideal es que sea consistente para el mismo usuario.
+        // Mantendremos consistencia por usuario.
         logger.info(`🎨 Using Multiavatar with seed: "${seed}"`);
         avatarUrl = this.getMultiavatarUrl(seed);
       }
