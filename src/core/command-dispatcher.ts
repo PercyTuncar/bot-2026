@@ -1,4 +1,4 @@
-﻿﻿﻿import { getCommand } from './command-loader.js';
+﻿﻿import { getCommand } from './command-loader.js';
 import PermissionManager from './permission-manager.js';
 import PointsManager from './points-manager.js';
 import PremiumHandler from '../handlers/premiumHandler.js';

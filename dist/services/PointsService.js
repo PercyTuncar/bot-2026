@@ -50,15 +50,6 @@ export class PointsService {
             messageTimestamps.set(phone, recentMessages.slice(-20));
             const lastPoint = lastPointTime.get(phone);
             const timeSinceLastPoint = lastPoint ? (now - lastPoint) : Infinity;
-            const startTime = Date.now();
-            await PointsRepository.incrementMessageCounter(groupId, phone);
-            logger.info(`[${new Date().toISOString()}] [INCREMENT] groups/${groupId}/members/${phone}.messagesForNextPoint → SUCCESS (${Date.now() - startTime}ms)`);
-            const foundUpdated = await MemberRepository.findByPhoneOrLid(groupId, phone, null);
-            const updatedMember = foundUpdated ? foundUpdated.data : null;
-            if (!updatedMember || !updatedMember.isMember) {
-                return null;
-            }
-            const newCounter = updatedMember.messagesForNextPoint || 0;
             const groupConfig = await GroupRepository.getConfig(groupId);
             const group = await GroupRepository.getById(groupId);
             const messagesPerPoint = groupConfig?.messagesPerPoint
@@ -66,30 +57,19 @@ export class PointsService {
                 || group?.config?.messagesPerPoint
                 || group?.config?.points?.perMessages
                 || config.points.perMessages;
-            if (newCounter >= messagesPerPoint) {
+            const currentMessageCount = member.messageCount || 0;
+            const isPointMilestone = currentMessageCount > 0 && (currentMessageCount % messagesPerPoint === 0);
+            if (isPointMilestone) {
                 if (timeSinceLastPoint < 1000) {
-                    logger.info(`Rate limit: ${phone} intentó ganar punto muy rápido (${Math.round(timeSinceLastPoint / 1000)}s desde último)`);
-                    await MemberRepository.update(groupId, phone, {
-                        messagesForNextPoint: newCounter
-                    });
-                    return {
-                        pointsAdded: false,
-                        messagesForNextPoint: newCounter,
-                        messagesNeeded: 0,
-                        rateLimited: true
-                    };
+                    logger.warn(`Rate limit warning: ${phone} ganó punto muy rápido, pero se otorga por consistencia.`);
                 }
                 const pointStartTime = Date.now();
                 await PointsRepository.addPoints(groupId, phone, 1);
                 logger.info(`[${new Date().toISOString()}] [UPDATE] groups/${groupId}/members/${phone}.points +1 → SUCCESS (${Date.now() - pointStartTime}ms)`);
-                const resetStartTime = Date.now();
-                await PointsRepository.resetMessageCounter(groupId, phone);
-                logger.info(`[${new Date().toISOString()}] [UPDATE] groups/${groupId}/members/${phone}.messagesForNextPoint RESET → SUCCESS (${Date.now() - resetStartTime}ms)`);
                 lastPointTime.set(phone, now);
                 const foundUpdated = await MemberRepository.findByPhoneOrLid(groupId, phone, null);
                 const updatedMember = foundUpdated ? foundUpdated.data : null;
                 const newPoints = updatedMember?.points || 0;
-                const groupConfig = await GroupRepository.getConfig(groupId);
                 const levels = groupConfig?.levels || (await GroupRepository.getById(groupId))?.config?.levels;
                 const oldPoints = newPoints - 1;
                 const levelUpInfo = checkLevelUp(oldPoints, newPoints, levels);
@@ -114,13 +94,11 @@ export class PointsService {
                 };
             }
             else {
-                await MemberRepository.update(groupId, phone, {
-                    messagesForNextPoint: newCounter
-                });
+                const progress = currentMessageCount % messagesPerPoint;
                 return {
                     pointsAdded: false,
-                    messagesForNextPoint: newCounter,
-                    messagesNeeded: messagesPerPoint - newCounter
+                    messagesForNextPoint: progress,
+                    messagesNeeded: messagesPerPoint - progress
                 };
             }
         }

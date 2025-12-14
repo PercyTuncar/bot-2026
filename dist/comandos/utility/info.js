@@ -181,10 +181,9 @@ export default {
                 || group?.config?.messagesPerPoint
                 || group?.config?.points?.perMessages
                 || config.points.perMessages || 10;
-            const messageProgress = member.messagesForNextPoint ?? 0;
-            if (messageProgress > 0) {
-                response += `${EMOJIS.LOADING} *Progreso:* ${messageProgress}/${messagesNeeded} mensajes para +1 punto\n`;
-            }
+            const messageCount = member.messageCount ?? 0;
+            const messageProgress = messageCount % messagesNeeded;
+            response += `${EMOJIS.LOADING} *Progreso:* ${messageProgress}/${messagesNeeded} mensajes para +1 punto\n`;
             response += `\n━━━━ *MODERACIÓN* ━━━━\n`;
             response += `${EMOJIS.WARNING} *Advertencias:* ${member.warnings ?? 0}/${maxWarnings}\n`;
             const totalExits = member.totalExits ?? 0;

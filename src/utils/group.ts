@@ -1,4 +1,4 @@
-﻿﻿﻿import logger from '../lib/logger.js';
+﻿﻿import logger from '../lib/logger.js';
 import { normalizePhone } from './phone.js';
 
 function normalizeParticipantId(participant) {

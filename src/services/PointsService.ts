@@ -35,7 +35,7 @@ export class PointsService {
       // Usar userPhone pasado como parámetro (ya resuelto en event-handler)
       // userPhone puede ser phone o LID
       const userId = userPhone;
-      
+
       if (!userId) {
         logger.warn(`PointsService: No se recibió userPhone`);
         return null;
@@ -51,7 +51,7 @@ export class PointsService {
         logger.warn(`PointsService: Member not found for userId=${userId}`);
         return null;
       }
-      
+
       // USAR EL DOCID (phone) para todas las operaciones de Firestore
       const phone = found.docId;
       const member = found.data;
@@ -59,7 +59,7 @@ export class PointsService {
       // Validación extra de seguridad anti-bucle (solo si phone es numérico)
       const remoteJid = msg.to || msg.from;
       const isGroup = remoteJid?.endsWith('@g.us');
-      
+
       if (isGroup && !phone.includes('@lid')) {
         const rawGroupId = remoteJid.replace('@g.us', '');
         if (phone === rawGroupId) return null;
@@ -84,58 +84,38 @@ export class PointsService {
       const lastPoint = lastPointTime.get(phone);
       const timeSinceLastPoint = lastPoint ? (now - lastPoint) : Infinity;
 
-      // Incrementar contadores de mensajes para puntos
-      const startTime = Date.now();
-      await PointsRepository.incrementMessageCounter(groupId, phone);
-      logger.info(`[${new Date().toISOString()}] [INCREMENT] groups/${groupId}/members/${phone}.messagesForNextPoint → SUCCESS (${Date.now() - startTime}ms)`);
-
-      // Obtener miembro actualizado para ver el contador
-      // phone siempre es numérico aquí (viene de found.docId)
-      const foundUpdated = await MemberRepository.findByPhoneOrLid(groupId, phone, null);
-      const updatedMember = foundUpdated ? foundUpdated.data : null;
-
-      if (!updatedMember || !updatedMember.isMember) {
-        return null;
-      }
-
-      // Since we already incremented in DB and fetched fresh:
-      const newCounter = updatedMember.messagesForNextPoint || 0;
-
       // Obtener configuración del grupo para messagesPerPoint
       const groupConfig = await GroupRepository.getConfig(groupId);
       const group = await GroupRepository.getById(groupId);
       // Prioridad: groupConfig.messagesPerPoint > groupConfig.points?.perMessages > config global
-      const messagesPerPoint = groupConfig?.messagesPerPoint 
-        || groupConfig?.points?.perMessages 
+      const messagesPerPoint = groupConfig?.messagesPerPoint
+        || groupConfig?.points?.perMessages
         || group?.config?.messagesPerPoint
         || group?.config?.points?.perMessages
         || config.points.perMessages;
 
+      // Usar messageCount global para consistencia
+      const currentMessageCount = member.messageCount || 0;
+      
+      // Calcular progreso basado en messageCount
+      // Si el residuo es 0, significa que alcanzó un múltiplo (ej. 10, 20, 30)
+      // Aseguramos que currentMessageCount > 0 para evitar punto al inicio (0)
+      const isPointMilestone = currentMessageCount > 0 && (currentMessageCount % messagesPerPoint === 0);
+
       // Verificar si alcanzó el límite para +1 punto
-      if (newCounter >= messagesPerPoint) {
-        // Verificar rate limiting: solo dar punto si pasó 1 segundo desde el último (User requested consistency)
+      if (isPointMilestone) {
+        // Verificar rate limiting: solo dar punto si pasó 1 segundo desde el último
+        // PERO el usuario pidió consistencia estricta, así que relajamos esto o solo logueamos
         if (timeSinceLastPoint < 1000) {
-          logger.info(`Rate limit: ${phone} intentó ganar punto muy rápido (${Math.round(timeSinceLastPoint / 1000)}s desde último)`);
-          // Actualizar contador pero no dar punto todavía
-          await MemberRepository.update(groupId, phone, {
-            messagesForNextPoint: newCounter
-          });
-          return {
-            pointsAdded: false,
-            messagesForNextPoint: newCounter,
-            messagesNeeded: 0,
-            rateLimited: true
-          };
+           logger.warn(`Rate limit warning: ${phone} ganó punto muy rápido, pero se otorga por consistencia.`);
         }
 
-        // Agregar punto y resetear contador
+        // Agregar punto
         const pointStartTime = Date.now();
         await PointsRepository.addPoints(groupId, phone, 1);
         logger.info(`[${new Date().toISOString()}] [UPDATE] groups/${groupId}/members/${phone}.points +1 → SUCCESS (${Date.now() - pointStartTime}ms)`);
-        
-        const resetStartTime = Date.now();
-        await PointsRepository.resetMessageCounter(groupId, phone);
-        logger.info(`[${new Date().toISOString()}] [UPDATE] groups/${groupId}/members/${phone}.messagesForNextPoint RESET → SUCCESS (${Date.now() - resetStartTime}ms)`);
+
+        // Ya no reseteamos messagesForNextPoint porque usamos messageCount global
 
         // Actualizar timestamp del último punto
         lastPointTime.set(phone, now);
@@ -146,44 +126,43 @@ export class PointsService {
         const newPoints = updatedMember?.points || 0;
 
         // VERIFICAR SUBIDA DE NIVEL
-        const groupConfig = await GroupRepository.getConfig(groupId);
         const levels = groupConfig?.levels || (await GroupRepository.getById(groupId))?.config?.levels;
-        
+
         const oldPoints = newPoints - 1; // Puntos antes de sumar
         const levelUpInfo = checkLevelUp(oldPoints, newPoints, levels);
-        
+
         if (levelUpInfo && levelUpInfo.leveled) {
           // Actualizar currentLevel en base de datos
           await MemberRepository.update(groupId, phone, {
             currentLevel: levelUpInfo.newLevel.level
           });
-          
+
           logger.info(`🎉 ${phone} subió al nivel ${levelUpInfo.newLevel.level} (${levelUpInfo.newLevel.name})`);
         }
 
         logger.info(`Punto agregado a ${phone} en grupo ${groupId}. Total: ${newPoints}`);
 
         // Obtener nombre de puntos personalizado
-        const pointsName = groupConfig?.pointsName 
-          || group?.config?.points?.name 
+        const pointsName = groupConfig?.pointsName
+          || group?.config?.points?.name
           || config.points.name;
 
         return {
           pointsAdded: true,
           newPoints,
-          message: `¡Has ganado 1 ${pointsName}! Total: ${newPoints} ${pointsName}`,
+          message: `\n\n🎉 *¡PUNTO GANADO!* 🎉\n\n` +
+            `✨ Has obtenido *+1 ${pointsName}*\n` +
+            `💰 Total acumulado: *${newPoints} ${pointsName}*\n\n` +
+            `¡Sigue participando! 🚀`,
           levelUp: levelUpInfo
         };
       } else {
-        // Actualizar contador
-        await MemberRepository.update(groupId, phone, {
-          messagesForNextPoint: newCounter
-        });
-
+        // No se ganó punto, solo retornamos el estado actual
+        const progress = currentMessageCount % messagesPerPoint;
         return {
           pointsAdded: false,
-          messagesForNextPoint: newCounter,
-          messagesNeeded: messagesPerPoint - newCounter
+          messagesForNextPoint: progress,
+          messagesNeeded: messagesPerPoint - progress
         };
       }
     } catch (error) {

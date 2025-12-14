@@ -590,27 +590,6 @@ export class EventHandler {
                 logger.info(`👤 ⚠️ No se encontró nombre válido para ${phone}, usando número: "${fallbackName}"`);
                 displayName = fallbackName;
             }
-            try {
-                await MemberService.getOrCreateUnified(groupId, phone, this.sock, { authorName: displayName });
-            }
-            catch (e) {
-                logger.debug(`getOrCreateUnified failed: ${e.message}`);
-            }
-            try {
-                const numericPhone = phone.includes('@') ? phone.split('@')[0] : phone;
-                const { MemberRepository } = await import('../repositories/MemberRepository.js');
-                await MemberRepository.mergeMemberDocs(groupId, numericPhone, phone);
-            }
-            catch (e) {
-                logger.debug(`mergeMemberDocs failed: ${e.message}`);
-            }
-            try {
-                const { WarningService } = await import('../services/WarningService.js');
-                await WarningService.resetWarnings(groupId, phone, undefined, 'Ingreso al grupo (reset)');
-            }
-            catch (e) {
-                logger.debug(`resetWarnings on join failed: ${e.message}`);
-            }
             await WelcomeService.sendWelcome(this.sock, groupId, phone, displayName, memberCount, contactObject);
         }
         catch (error) {

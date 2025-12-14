@@ -1,4 +1,4 @@
-﻿﻿﻿import MemberRepository from '../../repositories/MemberRepository.js';
+﻿﻿import MemberRepository from '../../repositories/MemberRepository.js';
 import { EMOJIS } from '../../config/constants.js';
 import { normalizePhone } from '../../utils/phone.js';
 import { formatNumber } from '../../utils/formatter.js';

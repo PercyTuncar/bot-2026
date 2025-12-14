@@ -243,10 +243,12 @@ export default {
         || group?.config?.messagesPerPoint
         || group?.config?.points?.perMessages
         || config.points.perMessages || 10;
-      const messageProgress = member.messagesForNextPoint ?? 0;
-      if (messageProgress > 0) {
-        response += `${EMOJIS.LOADING} *Progreso:* ${messageProgress}/${messagesNeeded} mensajes para +1 punto\n`;
-      }
+        
+      // Calcular progreso basado en el total de mensajes para consistencia visual
+      const messageCount = member.messageCount ?? 0;
+      const messageProgress = messageCount % messagesNeeded;
+      
+      response += `${EMOJIS.LOADING} *Progreso:* ${messageProgress}/${messagesNeeded} mensajes para +1 punto\n`;
       
       // Sección de moderación
       response += `\n━━━━ *MODERACIÓN* ━━━━\n`;

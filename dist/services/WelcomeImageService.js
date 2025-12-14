@@ -23,33 +23,37 @@ class WelcomeImageService {
             logger.info(`🖼️ Generating welcome image for: ${userName} (ID: ${userId})`);
             let avatarUrl = null;
             let usingMultiavatar = true;
-            if (client && userId) {
+            if (client) {
                 try {
-                    let contactId = userId;
-                    if (!contactId.includes('@')) {
-                        contactId = `${contactId}@c.us`;
+                    avatarUrl = await client.getProfilePicUrl(userId).catch(() => null);
+                    if (!avatarUrl && userId.includes('@lid')) {
+                        try {
+                            const numberId = await client.getNumberId(userId.replace('@lid', '').replace('@c.us', ''));
+                            if (numberId && numberId._serialized) {
+                                logger.debug(`🖼️ Trying phone JID for profile pic: ${numberId._serialized}`);
+                                avatarUrl = await client.getProfilePicUrl(numberId._serialized).catch(() => null);
+                            }
+                        }
+                        catch (e) { }
                     }
-                    logger.info(`🖼️ Fetching profile picture for: ${contactId}`);
-                    const profilePicUrl = await client.getProfilePicUrl(contactId);
-                    if (profilePicUrl) {
-                        avatarUrl = profilePicUrl;
+                    if (!avatarUrl) {
+                        await new Promise(r => setTimeout(r, 500));
+                        avatarUrl = await client.getProfilePicUrl(userId).catch(() => null);
+                    }
+                    if (avatarUrl) {
                         usingMultiavatar = false;
-                        logger.info(`✅ Profile pic URL obtained successfully`);
-                    }
-                    else {
-                        logger.info(`ℹ️ No profile pic for ${contactId} (null returned)`);
+                        logger.info(`✅ Profile pic found for ${userName || userId}`);
                     }
                 }
                 catch (e) {
-                    logger.info(`ℹ️ Could not get profile pic: ${e.message || 'privacy/no photo'}`);
+                    logger.warn(`⚠️ Failed to fetch profile pic: ${e.message}`);
                 }
             }
             if (!avatarUrl) {
-                let seed = userName || userId || `user_${Date.now()}`;
-                if (seed === 'undefined' || seed === 'null' || seed === 'Usuario' || seed === 'Unknown') {
-                    seed = `user_${Date.now()}`;
+                let seed = userName || userId;
+                if (!seed || seed === 'undefined' || seed === 'null') {
+                    seed = `user_${Math.floor(Math.random() * 100000)}`;
                 }
-                seed = seed.replace(/@c\.us$/, '').replace(/@lid$/, '').replace(/@s\.whatsapp\.net$/, '');
                 logger.info(`🎨 Using Multiavatar with seed: "${seed}"`);
                 avatarUrl = this.getMultiavatarUrl(seed);
             }

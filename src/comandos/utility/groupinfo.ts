@@ -1,4 +1,4 @@
-﻿﻿﻿import GroupService from '../../services/GroupService.js';
+﻿﻿import GroupService from '../../services/GroupService.js';
 import { EMOJIS } from '../../config/constants.js';
 import ConfigService from '../../services/ConfigService.js';
 import { formatDate, formatRelativeTime, formatNumber } from '../../utils/formatter.js';

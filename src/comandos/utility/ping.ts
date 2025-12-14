@@ -1,4 +1,4 @@
-﻿﻿﻿import logger from '../../lib/logger.js';
+﻿﻿import logger from '../../lib/logger.js';
 import { EMOJIS } from '../../config/constants.js';
 import { bold, bulletList, joinSections, section } from '../../utils/message-builder.js';
 import { reply } from '../../utils/reply.js';

@@ -816,6 +816,8 @@ export class EventHandler {
       }
 
       // Registrar/crear miembro y asegurar estado consistente
+      // MODIFICACIÓN: NO registrar al usuario al unirse. Solo registrar al enviar primer mensaje.
+      /*
       try {
         await MemberService.getOrCreateUnified(groupId, phone, this.sock, { authorName: displayName });
       } catch (e: any) {
@@ -835,6 +837,8 @@ export class EventHandler {
       } catch (e: any) {
         logger.debug(`resetWarnings on join failed: ${e.message}`);
       }
+      */
+      
       // Enviar bienvenida
       await WelcomeService.sendWelcome(this.sock, groupId, phone, displayName, memberCount, contactObject);
     } catch (error) {
