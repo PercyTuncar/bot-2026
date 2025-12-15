@@ -15,9 +15,14 @@ export class WhatsAppClient {
         authStrategy: new LocalAuth({
           dataPath: '.wwebjs_auth'
         }),
+        // Fix: Use a stable web version to prevent repeated reloads/navigation errors
+        webVersionCache: {
+          type: 'remote',
+          remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
+        },
         puppeteer: {
           headless: true,
-          executablePath: process.env.CHROME_BIN || undefined, // Allow override
+          executablePath: process.env.CHROME_BIN || undefined,
           args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
@@ -25,8 +30,9 @@ export class WhatsAppClient {
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
             '--disable-gpu',
-            '--single-process', // Important for some containerized environments
-            '--no-zygote'       // Helps in resource constrained environments
+            '--single-process',
+            '--no-zygote',
+            '--disable-extensions'
           ]
         }
       });
@@ -53,19 +59,19 @@ export class WhatsAppClient {
         // @ts-ignore - pupPage is internal but accessible
         const page = this.client.pupPage;
         if (page) {
-            await page.evaluate(() => {
-                // Ensure window.Store exists and patch the missing function
+          await page.evaluate(() => {
+            // Ensure window.Store exists and patch the missing function
+            // @ts-ignore
+            if (window.Store && window.Store.ContactMethods) {
+              // @ts-ignore
+              if (typeof window.Store.ContactMethods.getIsMyContact !== 'function') {
+                console.log('[Polyfill] Injecting getIsMyContact...');
                 // @ts-ignore
-                if (window.Store && window.Store.ContactMethods) {
-                    // @ts-ignore
-                    if (typeof window.Store.ContactMethods.getIsMyContact !== 'function') {
-                        console.log('[Polyfill] Injecting getIsMyContact...');
-                        // @ts-ignore
-                        window.Store.ContactMethods.getIsMyContact = () => false; 
-                    }
-                }
-            });
-            logger.info('✅ Polyfill getIsMyContact injected successfully');
+                window.Store.ContactMethods.getIsMyContact = () => false;
+              }
+            }
+          });
+          logger.info('✅ Polyfill getIsMyContact injected successfully');
         }
       } catch (err) {
         logger.warn(`⚠️ Failed to inject polyfill: ${err.message}`);
@@ -113,7 +119,7 @@ export class WhatsAppClient {
     return new Promise(async (resolve, reject) => {
       try {
         logger.info('Iniciando inicialización del cliente...');
-        
+
         // Timeout de 2 minutos
         const timeout = setTimeout(() => {
           logger.error('❌ Timeout: La inicialización tomó más de 2 minutos');

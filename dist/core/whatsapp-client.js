@@ -12,6 +12,10 @@ export class WhatsAppClient {
                 authStrategy: new LocalAuth({
                     dataPath: '.wwebjs_auth'
                 }),
+                webVersionCache: {
+                    type: 'remote',
+                    remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
+                },
                 puppeteer: {
                     headless: true,
                     executablePath: process.env.CHROME_BIN || undefined,
@@ -23,7 +27,8 @@ export class WhatsAppClient {
                         '--no-first-run',
                         '--disable-gpu',
                         '--single-process',
-                        '--no-zygote'
+                        '--no-zygote',
+                        '--disable-extensions'
                     ]
                 }
             });

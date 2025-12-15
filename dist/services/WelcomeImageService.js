@@ -37,8 +37,15 @@ class WelcomeImageService {
                         catch (e) { }
                     }
                     if (!avatarUrl) {
-                        await new Promise(r => setTimeout(r, 500));
-                        avatarUrl = await client.getProfilePicUrl(userId).catch(() => null);
+                        const retryDelays = [500, 1000, 1500];
+                        for (const delay of retryDelays) {
+                            await new Promise(r => setTimeout(r, delay));
+                            avatarUrl = await client.getProfilePicUrl(userId).catch(() => null);
+                            if (avatarUrl) {
+                                logger.info(`✅ Profile pic found on retry (after ${delay}ms wait)`);
+                                break;
+                            }
+                        }
                     }
                     if (avatarUrl) {
                         usingMultiavatar = false;

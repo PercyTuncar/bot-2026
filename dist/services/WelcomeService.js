@@ -3,118 +3,11 @@ import MemberRepository from '../repositories/MemberRepository.js';
 import { welcomeImageService } from './WelcomeImageService.js';
 import { replacePlaceholders } from '../utils/formatter.js';
 import { config as envConfig } from '../config/environment.js';
+import { resolveLidToPhone, forceLoadContactData } from '../utils/lid-resolver.js';
 import logger from '../lib/logger.js';
 import pkg from 'whatsapp-web.js';
 const { MessageMedia } = pkg;
 export class WelcomeService {
-    static async getContactNameWithRetries(sock, waId, retries = 5, delayMs = 500) {
-        const sleep = (ms) => new Promise(res => setTimeout(res, ms));
-        for (let i = 0; i < retries; i++) {
-            try {
-                const contact = await sock.getContactById(waId);
-                if (contact) {
-                    const name = contact.pushname || contact.name || contact.shortName;
-                    if (name && name.trim().length > 0) {
-                        return { name: name.trim(), contact };
-                    }
-                }
-            }
-            catch (err) {
-            }
-            await sleep(delayMs);
-        }
-        return null;
-    }
-    static async getNameForMention(sock, jid) {
-        if (!sock?.pupPage)
-            return null;
-        try {
-            const result = await sock.pupPage.evaluate(async (participantJid) => {
-                try {
-                    const store = window.Store;
-                    if (!store)
-                        return null;
-                    const isValid = (n) => {
-                        if (!n || typeof n !== 'string')
-                            return false;
-                        const t = n.trim();
-                        return t.length > 0 && t !== 'undefined' && t.toLowerCase() !== 'null';
-                    };
-                    if (store.Contact) {
-                        const contact = store.Contact.get(participantJid);
-                        if (contact) {
-                            if (isValid(contact.pushname))
-                                return { name: contact.pushname, source: 'Contact.pushname' };
-                            if (isValid(contact.verifiedName))
-                                return { name: contact.verifiedName, source: 'Contact.verifiedName' };
-                            if (isValid(contact.notifyName))
-                                return { name: contact.notifyName, source: 'Contact.notifyName' };
-                        }
-                    }
-                    if (store.Chat) {
-                        const chat = store.Chat.get(participantJid);
-                        if (chat) {
-                            if (chat.contact) {
-                                if (isValid(chat.contact.pushname))
-                                    return { name: chat.contact.pushname, source: 'Chat.contact.pushname' };
-                                if (isValid(chat.contact.verifiedName))
-                                    return { name: chat.contact.verifiedName, source: 'Chat.contact.verifiedName' };
-                            }
-                            if (isValid(chat.name))
-                                return { name: chat.name, source: 'Chat.name' };
-                        }
-                    }
-                    if (store.GroupMetadata && store.GroupMetadata._index) {
-                        for (const [, groupMeta] of store.GroupMetadata._index) {
-                            if (groupMeta && groupMeta.participants) {
-                                const participants = Array.isArray(groupMeta.participants)
-                                    ? groupMeta.participants
-                                    : (groupMeta.participants.getModelsArray ? groupMeta.participants.getModelsArray() : []);
-                                if (Array.isArray(participants)) {
-                                    for (const p of participants) {
-                                        const pId = p.id?._serialized || p.id;
-                                        if (pId === participantJid) {
-                                            if (isValid(p.pushname))
-                                                return { name: p.pushname, source: 'GroupMeta.pushname' };
-                                            if (isValid(p.notify))
-                                                return { name: p.notify, source: 'GroupMeta.notify' };
-                                            if (isValid(p.name))
-                                                return { name: p.name, source: 'GroupMeta.name' };
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if (store.Msg && store.Msg._index) {
-                        for (const [, msg] of store.Msg._index) {
-                            const senderId = msg?.senderObj?.id?._serialized || msg?.sender?._serialized || msg?.from;
-                            if (senderId === participantJid) {
-                                if (isValid(msg.notifyName))
-                                    return { name: msg.notifyName, source: 'Msg.notifyName' };
-                                if (msg.senderObj && isValid(msg.senderObj.pushname)) {
-                                    return { name: msg.senderObj.pushname, source: 'Msg.senderObj.pushname' };
-                                }
-                            }
-                        }
-                    }
-                    return null;
-                }
-                catch (e) {
-                    return null;
-                }
-            }, jid);
-            if (result && result.name) {
-                logger.info(`✅ [getNameForMention] Nombre encontrado (${result.source}): "${result.name}"`);
-                return result.name;
-            }
-            return null;
-        }
-        catch (err) {
-            logger.debug(`[getNameForMention] Error: ${err.message}`);
-            return null;
-        }
-    }
     static async sendWelcome(sock, groupId, phone, displayName, memberCount = null, contactObject = null) {
         const sleep = (ms) => new Promise(res => setTimeout(res, ms));
         try {
@@ -127,14 +20,72 @@ export class WelcomeService {
             catch (e) {
                 logger.warn(`Could not get chat object for ${targetJid}: ${e.message}`);
             }
-            if (chat) {
-                logger.info(`[Welcome] Enviando estado 'composing' para forzar sync...`);
-                try {
-                    await chat.sendStateTyping();
+            const isLid = phone.includes('@lid');
+            const waId = isLid ? phone : (phone.includes('@') ? phone : `${phone}@c.us`);
+            let finalMentionJid = waId;
+            if (isLid) {
+                const resolvedPhone = await resolveLidToPhone(sock, groupId, waId);
+                if (resolvedPhone) {
+                    finalMentionJid = resolvedPhone.includes('@') ? resolvedPhone : `${resolvedPhone}@c.us`;
+                    logger.info(`✅ LID ${waId} resuelto a ${finalMentionJid} para bienvenida`);
                 }
-                catch (e) { }
             }
-            await sleep(2000);
+            const group = await GroupRepository.getById(groupId);
+            const groupName = group?.name || 'el grupo';
+            const dmJid = finalMentionJid.includes('@') ? finalMentionJid : `${finalMentionJid}@c.us`;
+            const dmMessage = `👋 ¡Bienvenido a *${groupName}*!\n\n` +
+                `📋 Es importante que leas las reglas del grupo para una mejor convivencia.\n\n` +
+                `¡Esperamos que disfrutes tu estadía!`;
+            try {
+                await sock.sendMessage(dmJid, dmMessage);
+                logger.info(`📨 DM de bienvenida enviado a ${dmJid}`);
+            }
+            catch (dmError) {
+                logger.warn(`⚠️ No se pudo enviar DM a ${dmJid}: ${dmError.message}`);
+            }
+            const TYPING_CYCLES = 2;
+            const TYPING_DURATION_MS = 2000;
+            const PAUSE_DURATION_MS = 2000;
+            const dataLoadPromise = (async () => {
+                let name = null;
+                await sleep(500);
+                const hydratedData = await forceLoadContactData(sock, finalMentionJid, groupId);
+                if (hydratedData?.name && hydratedData.name !== 'undefined' && hydratedData.name !== 'Usuario') {
+                    name = hydratedData.name;
+                    logger.info(`✅ [Welcome Async] Nombre obtenido vía forceLoadContactData: "${name}"`);
+                }
+                if (!name && displayName && displayName !== 'Usuario' && displayName !== 'Unknown' && displayName !== 'undefined') {
+                    name = displayName;
+                    logger.info(`✅ [Welcome Async] Nombre obtenido vía displayName: "${name}"`);
+                }
+                if (!name && contactObject) {
+                    const contactName = contactObject.pushname || contactObject.name || contactObject.shortName;
+                    if (contactName && contactName !== 'undefined' && contactName !== 'Usuario') {
+                        name = contactName;
+                        logger.info(`✅ [Welcome Async] Nombre obtenido vía contactObject: "${name}"`);
+                    }
+                }
+                return name;
+            })();
+            for (let cycle = 0; cycle < TYPING_CYCLES; cycle++) {
+                logger.debug(`📝 Typing cycle ${cycle + 1}/${TYPING_CYCLES}`);
+                if (chat) {
+                    try {
+                        await chat.sendStateTyping();
+                    }
+                    catch (e) { }
+                }
+                await sleep(TYPING_DURATION_MS);
+                if (cycle < TYPING_CYCLES - 1) {
+                    if (chat) {
+                        try {
+                            await chat.clearState();
+                        }
+                        catch (e) { }
+                    }
+                    await sleep(PAUSE_DURATION_MS);
+                }
+            }
             if (chat) {
                 try {
                     await chat.clearState();
@@ -146,32 +97,12 @@ export class WelcomeService {
                 logger.info(`ℹ️ Welcome disabled for group ${groupId}`);
                 return null;
             }
-            const group = await GroupRepository.getById(groupId);
             let count = memberCount;
             if (!count) {
                 const members = await MemberRepository.getActiveMembers(groupId);
                 count = members.length;
             }
-            const isLid = phone.includes('@lid');
-            const waId = isLid ? phone : (phone.includes('@') ? phone : `${phone}@c.us`);
-            let contact = contactObject;
-            let resolvedPhoneJid = null;
-            if (isLid) {
-                try {
-                    const found = await this.getContactNameWithRetries(sock, waId, 3, 300);
-                    if (found && found.contact) {
-                        contact = found.contact;
-                        if (contact.linkedContactId) {
-                            resolvedPhoneJid = contact.linkedContactId;
-                        }
-                        else if (contact.number && /^\d+$/.test(contact.number)) {
-                            resolvedPhoneJid = `${contact.number}@c.us`;
-                        }
-                    }
-                }
-                catch (e) { }
-            }
-            const finalMentionJid = resolvedPhoneJid || waId;
+            let nameForDisplay = await dataLoadPromise;
             let cleanNumberForText;
             if (finalMentionJid.includes('@lid')) {
                 cleanNumberForText = finalMentionJid.replace('@lid', '').split(':')[0];
@@ -179,96 +110,19 @@ export class WelcomeService {
             else {
                 cleanNumberForText = finalMentionJid.replace('@c.us', '').replace('@s.whatsapp.net', '');
             }
-            const userMentionText = `@${cleanNumberForText}`;
-            let nameForDisplay = null;
-            const jidsToTry = [finalMentionJid];
-            if (finalMentionJid !== waId)
-                jidsToTry.push(waId);
-            if (cleanNumberForText && /^\d+$/.test(cleanNumberForText)) {
-                const phoneJid = `${cleanNumberForText}@c.us`;
-                if (!jidsToTry.includes(phoneJid))
-                    jidsToTry.push(phoneJid);
-            }
-            let attempts = 0;
-            const maxAttempts = 2;
-            while (!nameForDisplay && attempts <= maxAttempts) {
-                if (attempts > 0) {
-                    logger.info(`[Welcome] Reintentando obtener nombre (intento ${attempts})...`);
-                    await sleep(1500);
-                }
-                for (const jidToTry of jidsToTry) {
-                    if (!nameForDisplay) {
-                        nameForDisplay = await this.getNameForMention(sock, jidToTry);
-                        if (nameForDisplay) {
-                            logger.info(`✅ [Welcome] Nombre encontrado con JID ${jidToTry}: "${nameForDisplay}"`);
-                            break;
-                        }
-                    }
-                }
-                if (nameForDisplay)
-                    break;
-                attempts++;
-            }
-            if (!nameForDisplay && sock?.pupPage) {
-                try {
-                    const groupJid = targetJid;
-                    const participantJid = waId;
-                    const result = await sock.pupPage.evaluate(async (gJid, pJid) => {
-                        try {
-                            const store = window.Store;
-                            if (!store?.GroupMetadata)
-                                return null;
-                            const groupMeta = store.GroupMetadata.get(gJid);
-                            if (!groupMeta?.participants)
-                                return null;
-                            const participants = Array.isArray(groupMeta.participants)
-                                ? groupMeta.participants
-                                : (groupMeta.participants.getModelsArray ? groupMeta.participants.getModelsArray() : []);
-                            if (Array.isArray(participants)) {
-                                for (const p of participants) {
-                                    const pId = p.id?._serialized || p.id;
-                                    if (pId === pJid || pId?.includes(pJid?.split('@')[0])) {
-                                        if (p.pushname)
-                                            return p.pushname;
-                                        if (p.notify)
-                                            return p.notify;
-                                        if (p.name)
-                                            return p.name;
-                                    }
-                                }
-                            }
-                            return null;
-                        }
-                        catch (e) {
-                            return null;
-                        }
-                    }, groupJid, participantJid);
-                    if (result) {
-                        nameForDisplay = result;
-                        logger.info(`✅ [Welcome] Nombre obtenido de GroupMetadata: "${result}"`);
-                    }
-                }
-                catch (e) {
-                }
-            }
-            if (!nameForDisplay && displayName && displayName !== 'Usuario' && displayName !== 'Unknown' && displayName !== 'undefined') {
-                nameForDisplay = displayName;
-            }
-            if (!nameForDisplay && contact) {
-                const contactName = contact.pushname || contact.name || contact.shortName;
-                if (contactName && contactName !== 'undefined' && contactName !== 'Usuario') {
-                    nameForDisplay = contactName;
-                }
-            }
             if (!nameForDisplay || nameForDisplay === 'Usuario' || nameForDisplay === 'undefined' || nameForDisplay === 'Unknown') {
                 nameForDisplay = cleanNumberForText;
                 logger.info(`📱 [Welcome] Usando número de teléfono como nombre: "${nameForDisplay}"`);
             }
+            const userMentionText = `@${nameForDisplay}`;
             logger.info(`📝 Datos finales: JID=${finalMentionJid}, mention=${userMentionText}, nameForDisplay="${nameForDisplay}"`);
             let message = replacePlaceholders(groupConfig.welcome.message, {
                 user: userMentionText,
+                usuario: userMentionText,
                 name: nameForDisplay,
-                group: group?.name || 'el grupo',
+                nombre: nameForDisplay,
+                group: groupName,
+                grupo: groupName,
                 count: count
             });
             if (!message || message.trim() === '') {

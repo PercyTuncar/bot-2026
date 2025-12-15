@@ -7,7 +7,7 @@ import WelcomeService from '../services/WelcomeService.js';
 import ModerationService from '../services/ModerationService.js';
 import GroupRepository from '../repositories/GroupRepository.js';
 import { normalizePhone, getUserId, normalizeGroupId, extractIdFromWid, getCanonicalId } from '../utils/phone.js';
-import { resolveLidToPhone, forceGroupMetadataSync, extractParticipantNameAfterSync, getCachedLidName, forceLoadContactData } from '../utils/lid-resolver.js';
+import { resolveLidToPhone, forceGroupMetadataSync, extractParticipantNameAfterSync, getCachedLidName } from '../utils/lid-resolver.js';
 import logger from '../lib/logger.js';
 export class EventHandler {
     sock;
@@ -326,15 +326,6 @@ export class EventHandler {
             };
             const targetJid = groupId.includes('@') ? groupId : `${groupId}@g.us`;
             const participantJid = phone.includes('@') ? phone : `${phone}@c.us`;
-            logger.info(`🚀 [FORCE LOAD] Forzando carga de datos vía Puppeteer para ${phone}...`);
-            const forceLoadResult = await forceLoadContactData(this.sock, participantJid, targetJid);
-            if (forceLoadResult.name && isValidName(forceLoadResult.name)) {
-                displayName = forceLoadResult.name;
-                logger.info(`✅ [FORCE LOAD] Nombre obtenido exitosamente: "${displayName}"`);
-            }
-            else {
-                logger.warn(`⚠️ [FORCE LOAD] No se pudo obtener nombre, continuando con métodos alternativos...`);
-            }
             try {
                 const cachedName = getCachedLidName(phone);
                 if (cachedName && isValidName(cachedName)) {
