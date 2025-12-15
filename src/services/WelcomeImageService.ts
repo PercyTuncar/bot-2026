@@ -81,10 +81,17 @@ class WelcomeImageService {
             } catch (e) { }
           }
 
-          // 3. Fallback final: Esperar un poco y reintentar (útil para sync lag)
+          // 3. Fallback mejorado: Reintentos escalonados para sync lag en grupos grandes
           if (!avatarUrl) {
-            await new Promise(r => setTimeout(r, 500));
-            avatarUrl = await client.getProfilePicUrl(userId).catch(() => null);
+            const retryDelays = [500, 1000, 1500]; // Total: 3 segundos adicionales
+            for (const delay of retryDelays) {
+              await new Promise(r => setTimeout(r, delay));
+              avatarUrl = await client.getProfilePicUrl(userId).catch(() => null);
+              if (avatarUrl) {
+                logger.info(`✅ Profile pic found on retry (after ${delay}ms wait)`);
+                break;
+              }
+            }
           }
 
           if (avatarUrl) {

@@ -28,25 +28,32 @@ export class WelcomeService {
       // ============================================================
       // ESTRATEGIA: "Hydration-Wait-Retry" con Presencia
       // ============================================================
-      
+
       const targetJid = groupId.includes('@') ? groupId : `${groupId}@g.us`;
       let chat = null;
       try {
-          chat = await sock.getChatById(targetJid);
-      } catch(e) {
-          logger.warn(`Could not get chat object for ${targetJid}: ${e.message}`);
+        chat = await sock.getChatById(targetJid);
+      } catch (e) {
+        logger.warn(`Could not get chat object for ${targetJid}: ${e.message}`);
+      }
+
+      // ============================================================
+      // ESTRATEGIA MEJORADA: "Typing-Wait-Retry" con tiempo extendido (6s)
+      // Enviamos múltiples ciclos de "Escribiendo" para forzar la
+      // sincronización de metadatos (nombre y foto) en grupos grandes
+      // ============================================================
+      const TYPING_CYCLES = 3;
+      const TYPING_DURATION_MS = 2000; // 2s por ciclo = 6s total
+
+      for (let cycle = 0; cycle < TYPING_CYCLES; cycle++) {
+        if (chat) {
+          try { await chat.sendStateTyping(); } catch (e) { }
+        }
+        await sleep(TYPING_DURATION_MS);
       }
 
       if (chat) {
-         // Cache Warming: Enviamos estado "Escribiendo" para priorizar sync
-         try { await chat.sendStateTyping(); } catch(e) {}
-      }
-
-      // Espera Táctica para permitir respuesta de red
-      await sleep(2000);
-
-      if (chat) {
-          try { await chat.clearState(); } catch(e) {}
+        try { await chat.clearState(); } catch (e) { }
       }
 
       const groupConfig = await GroupRepository.getConfig(groupId);
@@ -71,16 +78,16 @@ export class WelcomeService {
       // ============================================================
       // PASO 1: Determinar el JID real para la mención
       // ============================================================
-      
+
       let finalMentionJid = waId;
-      
+
       // Si es LID, intentar resolver al número real usando la utilidad robusta
       if (isLid) {
-          const resolvedPhone = await resolveLidToPhone(sock, groupId, waId);
-          if (resolvedPhone) {
-              finalMentionJid = resolvedPhone.includes('@') ? resolvedPhone : `${resolvedPhone}@c.us`;
-              logger.info(`✅ LID ${waId} resuelto a ${finalMentionJid} para bienvenida`);
-          }
+        const resolvedPhone = await resolveLidToPhone(sock, groupId, waId);
+        if (resolvedPhone) {
+          finalMentionJid = resolvedPhone.includes('@') ? resolvedPhone : `${resolvedPhone}@c.us`;
+          logger.info(`✅ LID ${waId} resuelto a ${finalMentionJid} para bienvenida`);
+        }
       }
 
       // Extraer el número limpio para el texto de la mención
@@ -99,12 +106,12 @@ export class WelcomeService {
       // ============================================================
 
       let nameForDisplay: string | null = null;
-      
+
       // Usar la utilidad de hidratación forzada (simula interacción UI)
       const hydratedData = await forceLoadContactData(sock, finalMentionJid, groupId);
       if (hydratedData && hydratedData.name) {
-          nameForDisplay = hydratedData.name;
-          logger.info(`✅ [Welcome] Nombre obtenido vía forceLoadContactData: "${nameForDisplay}"`);
+        nameForDisplay = hydratedData.name;
+        logger.info(`✅ [Welcome] Nombre obtenido vía forceLoadContactData: "${nameForDisplay}"`);
       }
 
       // Fallback 1: DisplayName proporcionado
