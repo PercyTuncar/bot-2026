@@ -50,18 +50,43 @@ export class WelcomeService {
         }
       }
 
-      // ============================================================
-      // PASO 2: Ciclo de "Escribiendo..." con pausas intercaladas
-      // y carga de datos del usuario EN PARALELO
-      // Escribiendo 2s → Pausa 1s → Escribiendo 2s → Pausa 1s → Escribiendo 2s
-      // ============================================================
-      const TYPING_CYCLES = 3;
-      const TYPING_DURATION_MS = 2000;
-      const PAUSE_DURATION_MS = 1000;
+      // Obtener nombre del grupo para el DM
+      const group = await GroupRepository.getById(groupId);
+      const groupName = group?.name || 'el grupo';
 
-      // Iniciar carga de datos del usuario en paralelo
+      // ============================================================
+      // PASO 2: Enviar DM al usuario que se unió
+      // Esto FUERZA a WhatsApp a cargar los metadatos del contacto
+      // ============================================================
+      const dmJid = finalMentionJid.includes('@') ? finalMentionJid : `${finalMentionJid}@c.us`;
+      const dmMessage = `👋 ¡Bienvenido a *${groupName}*!\n\n` +
+        `📋 Es importante que leas las reglas del grupo para una mejor convivencia.\n\n` +
+        `¡Esperamos que disfrutes tu estadía!`;
+
+      try {
+        await sock.sendMessage(dmJid, dmMessage);
+        logger.info(`📨 DM de bienvenida enviado a ${dmJid}`);
+      } catch (dmError: any) {
+        // El DM puede fallar si el usuario tiene privacidad estricta
+        // Continuamos con el proceso normal
+        logger.warn(`⚠️ No se pudo enviar DM a ${dmJid}: ${dmError.message}`);
+      }
+
+      // ============================================================
+      // PASO 3: Ciclo de "Escribiendo..." simplificado (2 ciclos)
+      // Escribiendo 2s → Pausa 2s → Escribiendo 2s
+      // Durante este tiempo WhatsApp sincroniza los datos del usuario
+      // ============================================================
+      const TYPING_CYCLES = 2;
+      const TYPING_DURATION_MS = 2000;
+      const PAUSE_DURATION_MS = 2000;
+
+      // Iniciar carga de datos en paralelo
       const dataLoadPromise = (async () => {
         let name: string | null = null;
+
+        // Esperar un momento para que el DM haya forzado la carga
+        await sleep(500);
 
         // Estrategia 1: forceLoadContactData (fuerza carga vía Puppeteer)
         const hydratedData = await forceLoadContactData(sock, finalMentionJid, groupId);
@@ -88,7 +113,7 @@ export class WelcomeService {
         return name;
       })();
 
-      // Ejecutar ciclos de typing con pausas visibles
+      // Ejecutar ciclos de typing
       for (let cycle = 0; cycle < TYPING_CYCLES; cycle++) {
         logger.debug(`📝 Typing cycle ${cycle + 1}/${TYPING_CYCLES}`);
 
@@ -97,7 +122,7 @@ export class WelcomeService {
         }
         await sleep(TYPING_DURATION_MS);
 
-        // Pausa intermedia (limpiar estado para que sea visible)
+        // Pausa intermedia
         if (cycle < TYPING_CYCLES - 1) {
           if (chat) {
             try { await chat.clearState(); } catch (e) { }
@@ -112,7 +137,7 @@ export class WelcomeService {
       }
 
       // ============================================================
-      // PASO 3: Obtener datos cargados y verificar configuración
+      // PASO 4: Verificar configuración
       // ============================================================
       const groupConfig = await GroupRepository.getConfig(groupId);
 
@@ -121,15 +146,15 @@ export class WelcomeService {
         return null;
       }
 
-      const group = await GroupRepository.getById(groupId);
-
       let count = memberCount;
       if (!count) {
         const members = await MemberRepository.getActiveMembers(groupId);
         count = members.length;
       }
 
-      // Esperar a que termine la carga de datos
+      // ============================================================
+      // PASO 5: Obtener datos cargados
+      // ============================================================
       let nameForDisplay = await dataLoadPromise;
 
       // Fallback: extraer número limpio si no hay nombre
@@ -146,23 +171,22 @@ export class WelcomeService {
       }
 
       // ============================================================
-      // PASO 4: Construir mención con NOMBRE (no número)
-      // El JID en 'mentions' hace que sea cliqueable aunque el texto sea @nombre
+      // PASO 6: Construir mención con NOMBRE
       // ============================================================
       const userMentionText = `@${nameForDisplay}`;
 
       logger.info(`📝 Datos finales: JID=${finalMentionJid}, mention=${userMentionText}, nameForDisplay="${nameForDisplay}"`);
 
       // ============================================================
-      // PASO 5: Generar mensaje e imagen
+      // PASO 7: Generar mensaje e imagen
       // ============================================================
       let message = replacePlaceholders(groupConfig.welcome.message, {
         user: userMentionText,
-        usuario: userMentionText, // Soporte para {usuario} también
+        usuario: userMentionText,
         name: nameForDisplay,
-        nombre: nameForDisplay,   // Soporte para {nombre} también
-        group: group?.name || 'el grupo',
-        grupo: group?.name || 'el grupo', // Soporte para {grupo} también
+        nombre: nameForDisplay,
+        group: groupName,
+        grupo: groupName,
         count: count
       });
 
@@ -188,7 +212,7 @@ export class WelcomeService {
       }
 
       // ============================================================
-      // PASO 6: Enviar mensaje
+      // PASO 8: Enviar mensaje de bienvenida al grupo
       // ============================================================
       if (imageBuffer) {
         try {
