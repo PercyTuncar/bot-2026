@@ -25,10 +25,6 @@ export class WelcomeService {
     try {
       logger.info(`👋 Processing welcome for ${phone} in ${groupId}`);
 
-      // ============================================================
-      // ESTRATEGIA: "Hydration-Wait-Retry" con Presencia
-      // ============================================================
-
       const targetJid = groupId.includes('@') ? groupId : `${groupId}@g.us`;
       let chat = null;
       try {
@@ -38,24 +34,86 @@ export class WelcomeService {
       }
 
       // ============================================================
-      // ESTRATEGIA MEJORADA: "Typing-Wait-Retry" con tiempo extendido (6s)
-      // Enviamos múltiples ciclos de "Escribiendo" para forzar la
-      // sincronización de metadatos (nombre y foto) en grupos grandes
+      // PASO 1: Preparar identificadores del usuario
+      // ============================================================
+      const isLid = phone.includes('@lid');
+      const waId = isLid ? phone : (phone.includes('@') ? phone : `${phone}@c.us`);
+
+      let finalMentionJid = waId;
+
+      // Si es LID, resolver al número real
+      if (isLid) {
+        const resolvedPhone = await resolveLidToPhone(sock, groupId, waId);
+        if (resolvedPhone) {
+          finalMentionJid = resolvedPhone.includes('@') ? resolvedPhone : `${resolvedPhone}@c.us`;
+          logger.info(`✅ LID ${waId} resuelto a ${finalMentionJid} para bienvenida`);
+        }
+      }
+
+      // ============================================================
+      // PASO 2: Ciclo de "Escribiendo..." con pausas intercaladas
+      // y carga de datos del usuario EN PARALELO
+      // Escribiendo 2s → Pausa 1s → Escribiendo 2s → Pausa 1s → Escribiendo 2s
       // ============================================================
       const TYPING_CYCLES = 3;
-      const TYPING_DURATION_MS = 2000; // 2s por ciclo = 6s total
+      const TYPING_DURATION_MS = 2000;
+      const PAUSE_DURATION_MS = 1000;
 
+      // Iniciar carga de datos del usuario en paralelo
+      const dataLoadPromise = (async () => {
+        let name: string | null = null;
+
+        // Estrategia 1: forceLoadContactData (fuerza carga vía Puppeteer)
+        const hydratedData = await forceLoadContactData(sock, finalMentionJid, groupId);
+        if (hydratedData?.name && hydratedData.name !== 'undefined' && hydratedData.name !== 'Usuario') {
+          name = hydratedData.name;
+          logger.info(`✅ [Welcome Async] Nombre obtenido vía forceLoadContactData: "${name}"`);
+        }
+
+        // Estrategia 2: displayName proporcionado
+        if (!name && displayName && displayName !== 'Usuario' && displayName !== 'Unknown' && displayName !== 'undefined') {
+          name = displayName;
+          logger.info(`✅ [Welcome Async] Nombre obtenido vía displayName: "${name}"`);
+        }
+
+        // Estrategia 3: contactObject
+        if (!name && contactObject) {
+          const contactName = contactObject.pushname || contactObject.name || contactObject.shortName;
+          if (contactName && contactName !== 'undefined' && contactName !== 'Usuario') {
+            name = contactName;
+            logger.info(`✅ [Welcome Async] Nombre obtenido vía contactObject: "${name}"`);
+          }
+        }
+
+        return name;
+      })();
+
+      // Ejecutar ciclos de typing con pausas visibles
       for (let cycle = 0; cycle < TYPING_CYCLES; cycle++) {
+        logger.debug(`📝 Typing cycle ${cycle + 1}/${TYPING_CYCLES}`);
+
         if (chat) {
           try { await chat.sendStateTyping(); } catch (e) { }
         }
         await sleep(TYPING_DURATION_MS);
+
+        // Pausa intermedia (limpiar estado para que sea visible)
+        if (cycle < TYPING_CYCLES - 1) {
+          if (chat) {
+            try { await chat.clearState(); } catch (e) { }
+          }
+          await sleep(PAUSE_DURATION_MS);
+        }
       }
 
+      // Limpiar estado al final
       if (chat) {
         try { await chat.clearState(); } catch (e) { }
       }
 
+      // ============================================================
+      // PASO 3: Obtener datos cargados y verificar configuración
+      // ============================================================
       const groupConfig = await GroupRepository.getConfig(groupId);
 
       if (!groupConfig?.welcome?.enabled) {
@@ -65,32 +123,16 @@ export class WelcomeService {
 
       const group = await GroupRepository.getById(groupId);
 
-      // Obtener conteo de miembros
       let count = memberCount;
       if (!count) {
         const members = await MemberRepository.getActiveMembers(groupId);
         count = members.length;
       }
 
-      const isLid = phone.includes('@lid');
-      const waId = isLid ? phone : (phone.includes('@') ? phone : `${phone}@c.us`);
+      // Esperar a que termine la carga de datos
+      let nameForDisplay = await dataLoadPromise;
 
-      // ============================================================
-      // PASO 1: Determinar el JID real para la mención
-      // ============================================================
-
-      let finalMentionJid = waId;
-
-      // Si es LID, intentar resolver al número real usando la utilidad robusta
-      if (isLid) {
-        const resolvedPhone = await resolveLidToPhone(sock, groupId, waId);
-        if (resolvedPhone) {
-          finalMentionJid = resolvedPhone.includes('@') ? resolvedPhone : `${resolvedPhone}@c.us`;
-          logger.info(`✅ LID ${waId} resuelto a ${finalMentionJid} para bienvenida`);
-        }
-      }
-
-      // Extraer el número limpio para el texto de la mención
+      // Fallback: extraer número limpio si no hay nombre
       let cleanNumberForText;
       if (finalMentionJid.includes('@lid')) {
         cleanNumberForText = finalMentionJid.replace('@lid', '').split(':')[0];
@@ -98,51 +140,29 @@ export class WelcomeService {
         cleanNumberForText = finalMentionJid.replace('@c.us', '').replace('@s.whatsapp.net', '');
       }
 
-      const userMentionText = `@${cleanNumberForText}`;
-
-      // ============================================================
-      // PASO 2: Obtener el NOMBRE REAL (Pushname)
-      // Usamos forceLoadContactData para garantizar datos frescos
-      // ============================================================
-
-      let nameForDisplay: string | null = null;
-
-      // Usar la utilidad de hidratación forzada (simula interacción UI)
-      const hydratedData = await forceLoadContactData(sock, finalMentionJid, groupId);
-      if (hydratedData && hydratedData.name) {
-        nameForDisplay = hydratedData.name;
-        logger.info(`✅ [Welcome] Nombre obtenido vía forceLoadContactData: "${nameForDisplay}"`);
-      }
-
-      // Fallback 1: DisplayName proporcionado
-      if (!nameForDisplay && displayName && displayName !== 'Usuario' && displayName !== 'Unknown' && displayName !== 'undefined') {
-        nameForDisplay = displayName;
-      }
-
-      // Fallback 2: Objeto de contacto directo
-      if (!nameForDisplay && contactObject) {
-        const contactName = contactObject.pushname || contactObject.name || contactObject.shortName;
-        if (contactName && contactName !== 'undefined' && contactName !== 'Usuario') {
-          nameForDisplay = contactName;
-        }
-      }
-
-      // Fallback Final: Número de teléfono (nunca "Usuario" o "undefined")
       if (!nameForDisplay || nameForDisplay === 'Usuario' || nameForDisplay === 'undefined' || nameForDisplay === 'Unknown') {
         nameForDisplay = cleanNumberForText;
         logger.info(`📱 [Welcome] Usando número de teléfono como nombre: "${nameForDisplay}"`);
       }
 
+      // ============================================================
+      // PASO 4: Construir mención con NOMBRE (no número)
+      // El JID en 'mentions' hace que sea cliqueable aunque el texto sea @nombre
+      // ============================================================
+      const userMentionText = `@${nameForDisplay}`;
+
       logger.info(`📝 Datos finales: JID=${finalMentionJid}, mention=${userMentionText}, nameForDisplay="${nameForDisplay}"`);
 
       // ============================================================
-      // PASO 3: Generar mensaje e imagen
+      // PASO 5: Generar mensaje e imagen
       // ============================================================
-
       let message = replacePlaceholders(groupConfig.welcome.message, {
         user: userMentionText,
+        usuario: userMentionText, // Soporte para {usuario} también
         name: nameForDisplay,
+        nombre: nameForDisplay,   // Soporte para {nombre} también
         group: group?.name || 'el grupo',
+        grupo: group?.name || 'el grupo', // Soporte para {grupo} también
         count: count
       });
 
@@ -157,8 +177,8 @@ export class WelcomeService {
         try {
           if (envConfig.cloudinary?.welcomeBgUrl) {
             imageBuffer = await welcomeImageService.createWelcomeImage(
-              waId,           // ID original para buscar foto
-              nameForDisplay, // Nombre correcto para la imagen
+              waId,
+              nameForDisplay,
               sock
             );
           }
@@ -168,9 +188,8 @@ export class WelcomeService {
       }
 
       // ============================================================
-      // PASO 4: Enviar
+      // PASO 6: Enviar mensaje
       // ============================================================
-
       if (imageBuffer) {
         try {
           const base64Image = imageBuffer.toString('base64');
