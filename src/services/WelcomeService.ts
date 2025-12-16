@@ -456,7 +456,7 @@ Lo mejor de esta etapa Early Bird:
   /**
    * Envía mensaje de despedida
    */
-  static async sendGoodbye(sock: any, groupId: string, phone: string, displayName: string | null) {
+  static async sendGoodbye(sock: any, groupId: string, phone: string, displayName: string | null, memberCount: number | null = null) {
     try {
       const config = await GroupRepository.getConfig(groupId);
 
@@ -467,9 +467,22 @@ Lo mejor de esta etapa Early Bird:
       const group = await GroupRepository.getById(groupId);
       const targetJid = groupId.includes('@') ? groupId : `${groupId}@g.us`;
 
+      // Fetch count if not provided
+      let count = memberCount;
+      if (!count) {
+        try {
+          const metadata = await sock.groupMetadata(targetJid);
+          count = metadata.participants.length;
+        } catch (e) {
+          const members = await MemberRepository.getActiveMembers(groupId);
+          count = members.length;
+        }
+      }
+
       const message = replacePlaceholders(config.goodbye.message, {
         name: displayName || phone,
-        group: group?.name || 'el grupo'
+        group: group?.name || 'el grupo',
+        count: count
       });
 
       await sock.sendMessage(targetJid, { text: message });

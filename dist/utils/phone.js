@@ -25,21 +25,24 @@ export function normalizePhone(phone) {
 export async function getCanonicalId(client, rawId) {
     if (!rawId)
         return '';
-    if (rawId.endsWith('@c.us') || rawId.endsWith('@s.whatsapp.net'))
+    if (rawId.endsWith('@c.us')) {
+        rawId = rawId.replace('@c.us', '@s.whatsapp.net');
+    }
+    if (rawId.endsWith('@s.whatsapp.net'))
         return rawId;
     if (!rawId.includes('@lid')) {
         const normalized = normalizePhone(rawId);
-        return normalized ? `${normalized}@c.us` : rawId;
+        return normalized ? `${normalized}@s.whatsapp.net` : rawId;
     }
     try {
-        if (!client)
+        if (!client || !client.onWhatsApp)
             return rawId;
-        const contact = await client.getContactById(rawId);
-        if (contact && contact.number) {
-            return `${contact.number}@c.us`;
-        }
-        if (contact && contact.id && contact.id._serialized && !contact.id._serialized.includes('@lid')) {
-            return contact.id._serialized;
+        const numericPart = rawId.split('@')[0].replace(/[^\d]/g, '');
+        if (numericPart.length >= 8) {
+            const result = await client.onWhatsApp(numericPart);
+            if (result && result[0] && result[0].exists) {
+                return result[0].jid;
+            }
         }
         return rawId;
     }

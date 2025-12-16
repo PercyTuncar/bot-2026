@@ -1,9 +1,9 @@
 import GroupService from '../../services/GroupService.js';
-import { formatError } from '../../utils/formatter.js';
 import { normalizeGroupId, groupIdToJid } from '../../utils/phone.js';
 import { EMOJIS } from '../../config/constants.js';
 import logger from '../../lib/logger.js';
 import { resolveGroupMetadata } from '../../utils/group.js';
+import { react, reactLoading, reactSuccess, reactError, reply } from '../../utils/reply.js';
 export default {
     name: 'bot',
     description: 'Activar/desactivar bot en el grupo',
@@ -20,13 +20,13 @@ export default {
             isRemoteActivation = true;
         }
         if (!targetGroupId) {
-            await sock.sendMessage(replyJid, formatError('Debes usar este comando en un grupo o especificar el ID del grupo en DM (ej: .bot on 123456)'));
+            await reply(sock, msg, `${EMOJIS.ERROR} Debes usar este comando en un grupo o especificar el ID del grupo en DM (ej: .bot on 123456)`);
             return;
         }
         const targetGroupJid = groupIdToJid(targetGroupId);
         if (action === 'on') {
             try {
-                await msg.react(EMOJIS.LOADING);
+                await reactLoading(sock, msg);
                 const adminPhone = userPhone;
                 if (!adminPhone) {
                     throw new Error('No se pudo determinar el teléfono del admin');
@@ -51,58 +51,67 @@ export default {
                 const result = await GroupService.activateGroup(canonicalGroupId, groupMetadata, sock);
                 if (result.outcome === 'ALREADY_ACTIVE') {
                     if (isRemoteActivation) {
-                        await sock.sendMessage(replyJid, `${EMOJIS.WARNING} El bot ya está activo en el grupo ${groupMetadata.subject || canonicalGroupId}`);
+                        await sock.sendMessage(replyJid, { text: `${EMOJIS.WARNING} El bot ya está activo en el grupo ${groupMetadata.subject || canonicalGroupId}` });
                     }
                     else {
-                        await sock.sendMessage(groupJidForMessage, `${EMOJIS.WARNING} El bot ya está activo y funcionando`);
+                        await sock.sendMessage(groupJidForMessage, { text: `${EMOJIS.WARNING} El bot ya está activo y funcionando` });
                     }
-                    await msg.react(EMOJIS.WARNING);
+                    await react(sock, msg, EMOJIS.WARNING);
                     return;
                 }
-                await msg.react(EMOJIS.SUCCESS);
+                await reactSuccess(sock, msg);
                 if (isRemoteActivation) {
-                    await sock.sendMessage(replyJid, `${EMOJIS.ROBOT} *Bot Activado (Silencioso)*\n\n` +
-                        `✅ El bot se ha activado correctamente en el grupo:\n` +
-                        `🏷️ *${groupMetadata.subject || 'Grupo desconocido'}*\n` +
-                        `🆔 ${canonicalGroupId}\n\n` +
-                        `👥 Participantes: ${groupMetadata.participants?.length || 0}\n` +
-                        `🤫 No se envió notificación al grupo.`);
+                    await sock.sendMessage(replyJid, {
+                        text: `${EMOJIS.ROBOT} *Bot Activado (Silencioso)*\n\n` +
+                            `✅ El bot se ha activado correctamente en el grupo:\n` +
+                            `🏷️ *${groupMetadata.subject || 'Grupo desconocido'}*\n` +
+                            `🆔 ${canonicalGroupId}\n\n` +
+                            `👥 Participantes: ${groupMetadata.participants?.length || 0}\n` +
+                            `🤫 No se envió notificación al grupo.`
+                    });
                 }
                 else {
-                    await sock.sendMessage(groupJidForMessage, `${EMOJIS.ROBOT} *Bot Activado*\n\n` +
-                        `✅ El bot está ahora activo en este grupo.\n` +
-                        ` Total participantes: ${groupMetadata.participants?.length || 0}\n` +
-                        `🎯 Sistema de puntos: Activo (1 punto cada 10 mensajes)\n\n` +
-                        `Usa .help para ver todos los comandos disponibles.`);
+                    await sock.sendMessage(groupJidForMessage, {
+                        text: `${EMOJIS.ROBOT} *Bot Activado*\n\n` +
+                            `✅ El bot está ahora activo en este grupo.\n` +
+                            ` Total participantes: ${groupMetadata.participants?.length || 0}\n` +
+                            `🎯 Sistema de puntos: Activo (1 punto cada 10 mensajes)\n\n` +
+                            `Usa .help para ver todos los comandos disponibles.`
+                    });
                 }
             }
             catch (error) {
                 logger.error(`[bot] Error al activar bot en grupo ${targetGroupId}:`, error);
-                await msg.react(EMOJIS.ERROR);
-                await sock.sendMessage(replyJid, formatError(`Error al activar el bot: ${error.message}`));
+                await reactError(sock, msg);
+                await reply(sock, msg, `${EMOJIS.ERROR} Error al activar el bot: ${error.message}`);
             }
         }
         else if (action === 'off') {
             try {
+                await reactLoading(sock, msg);
                 if (targetGroupId) {
                     await GroupService.deactivateGroup(targetGroupId);
                 }
-                const message = `${EMOJIS.ROBOT} Bot desactivado\nEl bot ya no guardará mensajes ni responderá comandos (excepto .bot on)`;
                 if (isRemoteActivation) {
-                    await sock.sendMessage(replyJid, `✅ Bot desactivado en el grupo ${targetGroupId}`);
+                    await sock.sendMessage(replyJid, { text: `✅ Bot desactivado en el grupo ${targetGroupId}` });
                 }
                 else {
-                    await sock.sendMessage(targetGroupJid, message);
+                    await sock.sendMessage(targetGroupJid, {
+                        text: `${EMOJIS.ROBOT} Bot desactivado\nEl bot ya no guardará mensajes ni responderá comandos (excepto .bot on)`
+                    });
                 }
+                await reactSuccess(sock, msg);
             }
             catch (error) {
-                await sock.sendMessage(replyJid, formatError('Error al desactivar el bot'));
+                await reactError(sock, msg);
+                await reply(sock, msg, `${EMOJIS.ERROR} Error al desactivar el bot: ${error.message}`);
             }
         }
         else {
-            await sock.sendMessage(replyJid, `Uso: .bot on/off [ID_GRUPO]\n` +
-                `on - Activa el bot (en el grupo actual o ID especificado)\n` +
-                `off - Desactiva el bot`);
+            await reply(sock, msg, `*Uso:* .bot on/off [ID_GRUPO]\n\n` +
+                `• *on* - Activa el bot (en el grupo actual o ID especificado)\n` +
+                `• *off* - Desactiva el bot\n\n` +
+                `_Ejemplo remoto:_ .bot on 120363199955210379`);
         }
     }
 };

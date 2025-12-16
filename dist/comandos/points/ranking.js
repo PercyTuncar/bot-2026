@@ -1,20 +1,23 @@
 import MemberRepository from '../../repositories/MemberRepository.js';
+import { EMOJIS } from '../../config/constants.js';
 import { formatNumber } from '../../utils/formatter.js';
-import { bold, bulletList, joinSections, section } from '../../utils/message-builder.js';
-import { reply } from '../../utils/reply.js';
+import { bold, bulletList, joinSections } from '../../utils/message-builder.js';
+import { reply, reactLoading, reactSuccess, reactError } from '../../utils/reply.js';
 export default {
     name: 'ranking',
-    description: 'Tu posiciÃ³n en el ranking',
+    description: 'Tu posición en el ranking',
     category: 'stats',
     permissions: 'user',
     scope: 'group',
     cooldown: 10,
     async execute({ sock, msg, groupId, userPhone, replyJid }) {
         try {
+            await reactLoading(sock, msg);
             const found = await MemberRepository.findByPhoneOrLid(groupId, userPhone, userPhone);
             const member = found ? found.data : null;
             if (!member || !member.isMember) {
-                await reply(sock, msg, joinSections([`${bold('❌ No estás registrado en este grupo')}`]));
+                await reactError(sock, msg);
+                await reply(sock, msg, `${EMOJIS.ERROR} No estás registrado en este grupo`);
                 return;
             }
             const [position, allMembers] = await Promise.all([
@@ -36,31 +39,25 @@ export default {
                 `Puntos: ${formatNumber(member.points || 0)}`,
                 `Mensajes: ${formatNumber(member.messageCount || 0)}`
             ]);
+            let response = joinSections([header, main]);
             if (previous) {
                 const diff = (previous.points || 0) - (member.points || 0);
-                const prevSection = section('Diferencia con el anterior', [
-                    `${previous.displayName} (#${position - 1}) - ${formatNumber(previous.points || 0)} puntos`,
-                    `↑ Te faltan ${formatNumber(diff)} puntos`
-                ]);
-                const response = joinSections([header, main, prevSection]);
-                await reply(sock, msg, response);
-                return;
+                response += `\n\n${bold('Diferencia con el anterior:')}\n`;
+                response += `${previous.displayName} (#${position - 1}) - ${formatNumber(previous.points || 0)} puntos\n`;
+                response += `↑ Te faltan ${formatNumber(diff)} puntos`;
             }
             if (next) {
                 const diff = (member.points || 0) - (next.points || 0);
-                const nextSection = section('Diferencia con el siguiente', [
-                    `${next.displayName} (#${position + 1}) - ${formatNumber(next.points || 0)} puntos`,
-                    `↓ Le ganas por ${formatNumber(diff)} puntos`
-                ]);
-                const response = joinSections([header, main, nextSection]);
-                await reply(sock, msg, response);
-                return;
+                response += `\n\n${bold('Diferencia con el siguiente:')}\n`;
+                response += `${next.displayName} (#${position + 1}) - ${formatNumber(next.points || 0)} puntos\n`;
+                response += `↓ Le ganas por ${formatNumber(diff)} puntos`;
             }
-            await reply(sock, msg, joinSections([header, main]));
+            await reply(sock, msg, response);
+            await reactSuccess(sock, msg);
         }
         catch (error) {
-            console.error('[RANKING] Error:', error);
-            await reply(sock, msg, joinSections([`${bold('❌ Error al obtener tu ranking')}`]));
+            await reactError(sock, msg);
+            await reply(sock, msg, `${EMOJIS.ERROR} Error al obtener tu ranking`);
         }
     }
 };

@@ -1,142 +1,214 @@
-import pkg from 'whatsapp-web.js';
-const { Client, LocalAuth } = pkg;
+import makeWASocket, { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, Browsers } from '@whiskeysockets/baileys';
+import pino from 'pino';
 import { displayQR } from '../lib/qr-handler.js';
 import logger from '../lib/logger.js';
-import { buildGroupMetadata } from '../utils/group.js';
-export class WhatsAppClient {
-    client;
+import fs from 'fs';
+const STORE_FILE = './baileys_contacts_store.json';
+class ContactStore {
+    contacts = {};
     constructor() {
+        this.load();
+    }
+    load() {
         try {
-            logger.info('Creando instancia de cliente de WhatsApp...');
-            this.client = new Client({
-                authStrategy: new LocalAuth({
-                    dataPath: '.wwebjs_auth'
-                }),
-                webVersionCache: {
-                    type: 'remote',
-                    remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
-                },
-                puppeteer: {
-                    headless: true,
-                    executablePath: process.env.CHROME_BIN || undefined,
-                    args: [
-                        '--no-sandbox',
-                        '--disable-setuid-sandbox',
-                        '--disable-dev-shm-usage',
-                        '--disable-accelerated-2d-canvas',
-                        '--no-first-run',
-                        '--disable-gpu',
-                        '--single-process',
-                        '--no-zygote',
-                        '--disable-extensions'
-                    ]
-                }
-            });
-            this.setupEvents();
-            logger.info('Instancia de cliente creada correctamente');
+            if (fs.existsSync(STORE_FILE)) {
+                const data = fs.readFileSync(STORE_FILE, 'utf-8');
+                this.contacts = JSON.parse(data);
+                logger.info(`📦 ContactStore: Loaded ${Object.keys(this.contacts).length} contacts`);
+            }
         }
-        catch (error) {
-            logger.error('Error al crear cliente de WhatsApp:', error);
-            throw error;
+        catch (e) {
+            logger.warn(`⚠️ Could not load contact store: ${e}`);
+            this.contacts = {};
         }
     }
-    setupEvents() {
-        this.client.on('qr', (qr) => {
-            displayQR(qr);
-            logger.info('QR code generado');
-        });
-        this.client.on('ready', async () => {
-            logger.info('✅ Cliente de WhatsApp listo');
-            try {
-                const page = this.client.pupPage;
-                if (page) {
-                    await page.evaluate(() => {
-                        if (window.Store && window.Store.ContactMethods) {
-                            if (typeof window.Store.ContactMethods.getIsMyContact !== 'function') {
-                                console.log('[Polyfill] Injecting getIsMyContact...');
-                                window.Store.ContactMethods.getIsMyContact = () => false;
-                            }
-                        }
-                    });
-                    logger.info('✅ Polyfill getIsMyContact injected successfully');
-                }
-            }
-            catch (err) {
-                logger.warn(`⚠️ Failed to inject polyfill: ${err.message}`);
-            }
-            const info = this.client.info;
-            logger.info(`Conectado como: ${info.pushname || info.wid.user}`);
-        });
-        this.client.on('authenticated', () => {
-            logger.info('✅ Autenticado');
-        });
-        this.client.on('auth_failure', (msg) => {
-            logger.error('❌ Error de autenticación:', msg);
-        });
-        this.client.on('disconnected', (reason) => {
-            logger.warn('Desconectado:', reason);
-        });
-        this.client.on('loading_screen', (percent, message) => {
-            logger.info(`Cargando WhatsApp Web: ${percent}% - ${message}`);
-        });
-        this.client.on('change_state', (state) => {
-            logger.info(`Estado del cliente cambiado: ${state}`);
-        });
-        this.client.on('change_battery', (batteryInfo) => {
-            logger.info(`Batería: ${batteryInfo.battery}% - Cargando: ${batteryInfo.plugged}`);
-        });
-        this.client.on('error', (error) => {
-            logger.error('❌ Error en cliente de WhatsApp:', error);
-        });
-        this.client.on('message_create', async (msg) => {
-        });
+    async save() {
+        try {
+            await fs.promises.writeFile(STORE_FILE, JSON.stringify(this.contacts, null, 2));
+        }
+        catch (e) {
+            logger.error(`⚠️ Error saving contact store: ${e}`);
+        }
+    }
+    update(jid, info) {
+        this.contacts[jid] = {
+            ...this.contacts[jid],
+            ...info,
+            lastSeen: Date.now()
+        };
+    }
+    get(jid) {
+        return this.contacts[jid];
+    }
+    getName(jid) {
+        const contact = this.contacts[jid];
+        if (!contact)
+            return null;
+        return contact.name || contact.notify || contact.verifiedName || null;
+    }
+}
+export const contactStore = new ContactStore();
+setInterval(async () => {
+    try {
+        await contactStore.save();
+    }
+    catch (e) {
+        logger.error('Failed to auto-save store', e);
+    }
+}, 30_000);
+export class WhatsAppClient {
+    sock = null;
+    isConnected = false;
+    reconnectAttempts = 0;
+    maxReconnectAttempts = 5;
+    constructor() {
+        logger.info('Creando instancia de cliente de WhatsApp (Baileys)...');
     }
     async initialize() {
         return new Promise(async (resolve, reject) => {
             try {
-                logger.info('Iniciando inicialización del cliente...');
-                const timeout = setTimeout(() => {
-                    logger.error('❌ Timeout: La inicialización tomó más de 2 minutos');
-                    reject(new Error('Timeout: La inicialización del cliente tomó más de 2 minutos'));
-                }, 2 * 60 * 1000);
-                try {
-                    await this.client.initialize();
-                    clearTimeout(timeout);
-                    logger.info('✅ Cliente de WhatsApp inicializado exitosamente');
-                    resolve(undefined);
-                }
-                catch (initError) {
-                    clearTimeout(timeout);
-                    logger.error('❌ Error durante inicialización:', initError);
-                    logger.error('Mensaje:', initError.message);
-                    if (initError.stack) {
-                        logger.error('Stack:', initError.stack);
+                logger.info('Iniciando inicialización del cliente Baileys...');
+                const { state, saveCreds } = await useMultiFileAuthState('baileys_auth');
+                const { version, isLatest } = await fetchLatestBaileysVersion();
+                logger.info(`Usando Baileys v${version.join('.')}${isLatest ? ' (última versión)' : ''}`);
+                this.sock = makeWASocket({
+                    version,
+                    auth: {
+                        creds: state.creds,
+                        keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' }))
+                    },
+                    printQRInTerminal: false,
+                    browser: Browsers.ubuntu('Chrome'),
+                    logger: pino({ level: 'silent' }),
+                    generateHighQualityLinkPreview: true,
+                    syncFullHistory: true,
+                    markOnlineOnConnect: true
+                });
+                this.sock.ev.on('contacts.update', (updates) => {
+                    for (const contact of updates) {
+                        if (contact.id && (contact.notify || contact.name)) {
+                            contactStore.update(contact.id, {
+                                notify: contact.notify,
+                                name: contact.name,
+                                verifiedName: contact.verifiedName
+                            });
+                            logger.debug(`[ARIA] Contact updated: ${contact.id} -> "${contact.notify || contact.name}"`);
+                        }
                     }
-                    reject(initError);
-                }
+                });
+                this.sock.ev.on('messages.upsert', ({ messages }) => {
+                    for (const msg of messages) {
+                        if (msg.pushName) {
+                            const sender = msg.key.participant || msg.key.remoteJid;
+                            if (sender) {
+                                contactStore.update(sender, { notify: msg.pushName });
+                                logger.debug(`[ARIA] PushName captured: ${sender} -> "${msg.pushName}"`);
+                            }
+                        }
+                    }
+                });
+                this.sock.ev.on('connection.update', async (update) => {
+                    const { connection, lastDisconnect, qr } = update;
+                    if (qr) {
+                        displayQR(qr);
+                        logger.info('QR code generado - escanea con WhatsApp');
+                    }
+                    if (connection === 'close') {
+                        const statusCode = lastDisconnect?.error?.output?.statusCode;
+                        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+                        logger.warn(`Conexión cerrada. Código: ${statusCode}. Reconectar: ${shouldReconnect}`);
+                        if (shouldReconnect && this.reconnectAttempts < this.maxReconnectAttempts) {
+                            this.reconnectAttempts++;
+                            logger.info(`Intento de reconexión ${this.reconnectAttempts}/${this.maxReconnectAttempts}...`);
+                            await new Promise(r => setTimeout(r, 3000));
+                            try {
+                                this.sock = await this.initialize();
+                            }
+                            catch (error) {
+                                logger.error('Error en reconexión:', error);
+                            }
+                        }
+                        else if (statusCode === DisconnectReason.loggedOut) {
+                            logger.error('❌ Sesión cerrada. Elimina la carpeta baileys_auth y vuelve a escanear el QR.');
+                            reject(new Error('Sesión cerrada por el usuario'));
+                        }
+                    }
+                    if (connection === 'open') {
+                        this.isConnected = true;
+                        this.reconnectAttempts = 0;
+                        logger.info('✅ Cliente de WhatsApp conectado exitosamente');
+                        resolve(this.sock);
+                    }
+                });
+                this.sock.ev.on('creds.update', saveCreds);
+                const timeout = setTimeout(() => {
+                    if (!this.isConnected) {
+                        logger.error('❌ Timeout: La inicialización tomó más de 2 minutos');
+                        reject(new Error('Timeout: La inicialización del cliente tomó más de 2 minutos'));
+                    }
+                }, 2 * 60 * 1000);
+                this.sock.ev.on('connection.update', (update) => {
+                    if (update.connection === 'open') {
+                        clearTimeout(timeout);
+                    }
+                });
             }
             catch (error) {
                 logger.error('❌ Error al inicializar cliente de WhatsApp:', error);
-                logger.error('Mensaje:', error.message);
-                if (error.stack) {
-                    logger.error('Stack:', error.stack);
-                }
                 reject(error);
             }
         });
     }
     getClient() {
-        return this.client;
-    }
-    async sendMessage(to, content) {
-        return await this.client.sendMessage(to, content);
-    }
-    async getGroupMetadata(groupId) {
-        const chat = await this.client.getChatById(groupId);
-        if (!chat || !chat.isGroup) {
-            throw new Error('El chat no es un grupo o no se pudo encontrar');
+        if (!this.sock) {
+            throw new Error('Cliente no inicializado');
         }
-        return buildGroupMetadata(chat, groupId);
+        return this.sock;
+    }
+    getContactStore() {
+        return contactStore;
+    }
+    async sendMessage(to, content, options) {
+        if (!this.sock) {
+            throw new Error('Cliente no inicializado');
+        }
+        const jid = to.includes('@') ? to : `${to}@s.whatsapp.net`;
+        return this.sock.sendMessage(jid, content, options);
+    }
+    async reply(msg, content) {
+        if (!this.sock) {
+            throw new Error('Cliente no inicializado');
+        }
+        const chatId = msg.key.remoteJid;
+        if (typeof content === 'string') {
+            return this.sock.sendMessage(chatId, { text: content }, { quoted: msg });
+        }
+        return this.sock.sendMessage(chatId, content, { quoted: msg });
+    }
+    async react(msg, emoji) {
+        if (!this.sock || !msg.key)
+            return;
+        const jid = msg.key.remoteJid;
+        const key = msg.key;
+        await this.sock.sendMessage(jid, {
+            react: { text: emoji, key }
+        });
+    }
+    getInfo() {
+        if (!this.sock?.user) {
+            return null;
+        }
+        return {
+            wid: {
+                user: this.sock.user.id.split(':')[0].split('@')[0],
+                _serialized: this.sock.user.id
+            },
+            pushname: this.sock.user.name || '',
+            platform: 'web'
+        };
+    }
+    isReady() {
+        return this.isConnected && this.sock !== null;
     }
 }
 export default WhatsAppClient;

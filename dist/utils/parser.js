@@ -26,12 +26,10 @@ export function extractMentions(msg) {
     const seen = new Set();
     if (msg.mentionedJidList && msg.mentionedJidList.length > 0) {
         for (const jid of msg.mentionedJidList) {
-            if (jid.endsWith('@lid')) {
-                continue;
-            }
-            const phone = jid.replace('@s.whatsapp.net', '').replace('@c.us', '');
-            if (phone.length >= 8 && phone.length <= 14 && /^\d+$/.test(phone) && !seen.has(phone)) {
-                mentions.push(phone);
+            const isLid = jid.endsWith('@lid');
+            const phone = jid.replace('@s.whatsapp.net', '').replace('@c.us', '').replace('@lid', '').split(':')[0];
+            if (phone && /^\d+$/.test(phone) && !seen.has(phone)) {
+                mentions.push({ phone, jid, isLid });
                 seen.add(phone);
             }
         }
@@ -42,8 +40,9 @@ export function extractMentions(msg) {
         let match;
         while ((match = regex.exec(text)) !== null) {
             const phone = match[1];
-            if (phone.length >= 8 && phone.length <= 14 && !seen.has(phone)) {
-                mentions.push(phone);
+            if (!seen.has(phone)) {
+                const isLid = phone.length >= 14;
+                mentions.push({ phone, jid: isLid ? `${phone}@lid` : `${phone}@s.whatsapp.net`, isLid });
                 seen.add(phone);
             }
         }
@@ -52,7 +51,7 @@ export function extractMentions(msg) {
 }
 export function getFirstMention(msg) {
     const mentions = extractMentions(msg);
-    return mentions.length > 0 ? mentions[0] : null;
+    return mentions.length > 0 ? mentions[0].phone : null;
 }
 export async function getMentionsAsync(msg) {
     try {
@@ -225,77 +224,66 @@ export async function getTargetUser(msg, chat = null) {
     if (mentionedJids.length > 0) {
         const mentionedLid = mentionedJids[0];
         logger.info(`[getTargetUser] Strategy 3: Processing mentionedLid=${mentionedLid}`);
+        const lidNumber = mentionedLid.replace('@lid', '').replace('@s.whatsapp.net', '').split(':')[0];
+        const isLid = mentionedLid.includes('@lid') || lidNumber.length >= 14;
         try {
             const chatObj = chat || await msg.getChat();
             logger.info(`[getTargetUser] Strategy 3: Got chat, isGroup=${chatObj?.isGroup}`);
-            if (chatObj && chatObj.isGroup && chatObj.participants) {
+            if (chatObj && chatObj.participants && chatObj.participants.length > 0) {
                 logger.info(`[getTargetUser] Strategy 3: Searching in ${chatObj.participants.length} participants`);
                 for (const participant of chatObj.participants) {
                     const participantId = participant.id?._serialized || participant.id;
                     if (participantId === mentionedLid) {
                         try {
                             const contact = await chatObj.client?.getContactById(participantId);
-                            if (contact) {
-                                logger.info(`[getTargetUser] Strategy 3: Found contact for LID - number=${contact.number}, pushname=${contact.pushname}`);
-                                if (contact.number) {
-                                    const phone = contact.number.replace(/\D/g, '');
-                                    if (phone.length >= 8 && phone.length <= 14) {
-                                        return {
-                                            contact: contact,
-                                            phone: phone,
-                                            name: contact.pushname || contact.name || phone,
-                                            jid: `${phone}@s.whatsapp.net`,
-                                            method: 'lid_resolved',
-                                            isLid: true
-                                        };
-                                    }
+                            if (contact && contact.number) {
+                                const phone = contact.number.replace(/\D/g, '');
+                                if (phone.length >= 8 && phone.length <= 14) {
+                                    logger.info(`[getTargetUser] Strategy 3: Resolved LID to real phone: ${phone}`);
+                                    return {
+                                        contact: contact,
+                                        phone: phone,
+                                        name: contact.pushname || contact.name || phone,
+                                        jid: `${phone}@s.whatsapp.net`,
+                                        method: 'lid_resolved',
+                                        isLid: true
+                                    };
                                 }
                             }
                         }
                         catch (contactErr) {
-                            logger.error(`[getTargetUser] Strategy 3: Error getting contact: ${contactErr.message}`);
+                            logger.debug(`[getTargetUser] Strategy 3: getContactById failed: ${contactErr.message}`);
                         }
                     }
                 }
-                const lidNumber = mentionedLid.replace('@lid', '').replace('@s.whatsapp.net', '');
-                logger.info(`[getTargetUser] Strategy 3: Returning LID as fallback: ${lidNumber}`);
-                return {
-                    contact: null,
-                    phone: lidNumber,
-                    name: lidNumber,
-                    jid: mentionedLid,
-                    method: 'lid_direct',
-                    isLid: true
-                };
             }
         }
         catch (chatErr) {
-            logger.error(`[getTargetUser] Strategy 3: Error getting chat: ${chatErr.message}`);
-            const lidNumber = mentionedLid.replace('@lid', '').replace('@s.whatsapp.net', '');
-            logger.info(`[getTargetUser] Strategy 3 fallback: Returning LID directly: ${lidNumber}`);
-            return {
-                contact: null,
-                phone: lidNumber,
-                name: lidNumber,
-                jid: mentionedLid,
-                method: 'lid_fallback',
-                isLid: true
-            };
+            logger.debug(`[getTargetUser] Strategy 3: Chat access failed: ${chatErr.message}`);
         }
+        logger.info(`[getTargetUser] Strategy 3: Using JID directly: number=${lidNumber}, isLid=${isLid}`);
+        return {
+            contact: null,
+            phone: lidNumber,
+            name: lidNumber,
+            jid: mentionedLid,
+            method: 'jid_direct',
+            isLid: isLid
+        };
     }
     logger.info(`[getTargetUser] Strategy 4: Trying text extraction`);
     const textMentions = extractMentions(msg);
     logger.info(`[getTargetUser] Strategy 4: extractMentions returned ${JSON.stringify(textMentions)}`);
     if (textMentions.length > 0) {
-        const phone = textMentions[0];
-        if (phone && phone.length >= 8 && phone.length <= 14 && /^\d+$/.test(phone)) {
+        const mention = textMentions[0];
+        if (mention && mention.phone) {
             return {
                 contact: null,
-                phone: phone,
-                name: phone,
-                jid: `${phone}@s.whatsapp.net`,
+                phone: mention.phone,
+                name: mention.phone,
+                jid: mention.jid,
                 method: 'text',
-                isLid: false
+                isLid: mention.isLid
             };
         }
     }

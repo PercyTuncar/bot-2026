@@ -1,5 +1,4 @@
 import WarningService from './WarningService.js';
-import { normalizePhone } from '../utils/phone.js';
 import logger from '../lib/logger.js';
 export class ModerationService {
     static async checkBannedWords(groupId, messageText, config) {
@@ -83,11 +82,13 @@ export class ModerationService {
         return { violation: false };
     }
     static async handleViolation(sock, msg, violation, groupId, userPhone) {
-        const userId = userPhone;
+        const userId = userPhone.replace(/\D/g, '');
         try {
             if (violation.action === 'delete' || violation.action === 'kick') {
                 try {
-                    await msg.delete(true);
+                    if (msg.key) {
+                        await sock.sendMessage(msg.key.remoteJid, { delete: msg.key });
+                    }
                 }
                 catch (error) {
                     logger.warn(`No se pudo eliminar mensaje: ${error.message}`);
@@ -104,18 +105,24 @@ export class ModerationService {
                 else if (violation.type === 'spam') {
                     reason = `Spam detectado (${violation.count} mensajes muy rápido)`;
                 }
-                const botInfo = sock.info;
-                const botPhone = normalizePhone(botInfo?.wid?.user);
+                const botPhone = sock.user?.id?.split(':')[0]?.split('@')[0]?.replace(/\D/g, '') || 'Sistema';
                 const targetJid = groupId.includes('@') ? groupId : `${groupId}@g.us`;
+                const userJid = `${userId}@s.whatsapp.net`;
                 await WarningService.addWarning(groupId, userId, botPhone, 'Sistema de Moderación', reason);
-                await sock.sendMessage(targetJid, `⚠️ @${userId} ha recibido una advertencia automática\n\nMotivo: ${reason}`, { mentions: [userId + '@s.whatsapp.net'] });
+                await sock.sendMessage(targetJid, {
+                    text: `⚠️ @${userId} ha recibido una advertencia automática\n\nMotivo: ${reason}`,
+                    mentions: [userJid]
+                });
             }
             if (violation.action === 'kick') {
                 try {
                     const targetJid = groupId.includes('@') ? groupId : `${groupId}@g.us`;
-                    const chat = await sock.getChatById(targetJid);
-                    await chat.removeParticipants([userId + '@s.whatsapp.net']);
-                    await sock.sendMessage(targetJid, `❌ @${userId} ha sido expulsado por moderación automática`, { mentions: [userId + '@s.whatsapp.net'] });
+                    const userJid = `${userId}@s.whatsapp.net`;
+                    await sock.groupParticipantsUpdate(targetJid, [userJid], 'remove');
+                    await sock.sendMessage(targetJid, {
+                        text: `❌ @${userId} ha sido expulsado por moderación automática`,
+                        mentions: [userJid]
+                    });
                 }
                 catch (error) {
                     logger.error(`Error al expulsar usuario: ${error.message}`);

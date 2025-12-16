@@ -40,10 +40,10 @@ export function replacePlaceholders(text, data) {
     return result;
 }
 export function formatError(message) {
-    return `${EMOJIS.ERROR} ${message}`;
+    return { text: `${EMOJIS.ERROR} ${message}` };
 }
 export function formatSuccess(message) {
-    return `${EMOJIS.SUCCESS} ${message}`;
+    return { text: `${EMOJIS.SUCCESS} ${message}` };
 }
 export default {
     formatNumber,

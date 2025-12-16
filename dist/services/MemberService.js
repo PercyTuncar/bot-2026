@@ -23,24 +23,27 @@ export class MemberService {
         logger.info(`➕ Creating new member with userId: ${userId}`);
         let finalPhone = phone;
         if (!finalPhone && lid) {
-            finalPhone = lid.split('@')[0].replace(/[^\d]/g, '');
-            logger.info(`📞 Extracted phone from LID: ${finalPhone}`);
+            if (sock && sock.signalRepository?.lidMapping) {
+                try {
+                    const lidMap = sock.signalRepository.lidMapping;
+                    const pnJid = await lidMap.getPNForLID(lid);
+                    if (pnJid) {
+                        finalPhone = pnJid.split('@')[0].split(':')[0];
+                        logger.info(`🔄 [MemberService] Final LID resolution: ${lid} -> ${finalPhone}`);
+                    }
+                }
+                catch (e) { }
+            }
+            if (!finalPhone) {
+                finalPhone = lid.split('@')[0];
+                logger.warn(`⚠️ Created member with LID as phone (Resolution failed): ${finalPhone}`);
+            }
         }
         if (!finalPhone || finalPhone.length < 5) {
             logger.error(`❌ Cannot create member: invalid phone extracted from userId=${userId}`);
             throw new Error(`Invalid phone extracted: ${finalPhone}`);
         }
         let contact = null;
-        if (sock) {
-            try {
-                const jid = lid || (finalPhone + '@c.us');
-                contact = await sock.getContactById(jid);
-                logger.debug(`📞 Contact fetched for ${finalPhone}`);
-            }
-            catch (err) {
-                logger.debug(`Could not fetch contact for ${finalPhone}:`, err.message);
-            }
-        }
         const participant = {
             id: lid || (finalPhone + '@c.us'),
             notify: messageMetadata?.authorName || contact?.pushname || finalPhone,
@@ -70,13 +73,7 @@ export class MemberService {
                     return null;
                 }
                 try {
-                    let contact = null;
-                    try {
-                        contact = await sock.getContactById(participant.id._serialized);
-                    }
-                    catch (err) {
-                        logger.warn(`Could not fetch contact for ${phone}`, err);
-                    }
+                    const contact = null;
                     const memberData = await this.extractCompleteMemberMetadata(participant, contact, phone, groupId);
                     await MemberRepository.save(groupId, memberData);
                     logger.debug(`[WRITE] groups/${groupId}/members/${phone} → SUCCESS`);

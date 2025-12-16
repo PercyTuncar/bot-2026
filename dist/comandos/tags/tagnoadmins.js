@@ -1,6 +1,6 @@
-import { extractParticipants } from '../../utils/group.js';
-import { formatError } from '../../utils/formatter.js';
+import { EMOJIS } from '../../config/constants.js';
 import logger from '../../lib/logger.js';
+import { reply, reactLoading, reactSuccess, reactError } from '../../utils/reply.js';
 export default {
     name: 'tagnoadmins',
     description: 'Mencionar solo a los miembros que NO son administradores',
@@ -10,19 +10,24 @@ export default {
     cooldown: 30,
     async execute({ sock, msg, args, groupId, groupJid, replyJid }) {
         try {
+            await reactLoading(sock, msg);
             const targetJid = groupJid || (groupId.includes('@') ? groupId : `${groupId}@g.us`);
-            const chat = await sock.getChatById(targetJid);
-            if (!chat || !chat.isGroup) {
-                await sock.sendMessage(replyJid, formatError('Este comando solo funciona en grupos'));
+            let metadata;
+            try {
+                metadata = await sock.groupMetadata(targetJid);
+            }
+            catch (e) {
+                await reactError(sock, msg);
+                await reply(sock, msg, `${EMOJIS.ERROR} Este comando solo funciona en grupos`);
                 return;
             }
-            const participants = extractParticipants(chat);
-            const nonAdmins = participants.filter(p => !p?.isAdmin && !p?.isSuperAdmin);
+            const nonAdmins = metadata.participants.filter(p => !p.admin);
             if (nonAdmins.length === 0) {
-                await sock.sendMessage(replyJid, formatError('No se encontraron miembros no-administradores'));
+                await reactError(sock, msg);
+                await reply(sock, msg, `${EMOJIS.ERROR} No se encontraron miembros no-administradores`);
                 return;
             }
-            const mentions = nonAdmins.slice(0, 100).map(p => p?.id?._serialized || p?.id);
+            const mentions = nonAdmins.slice(0, 100).map(p => p.id);
             const body = msg.body || '';
             const cmdRegex = /^\s*([.\!\/#])?tagnoadmins\b/i;
             let text = '';
@@ -58,16 +63,22 @@ export default {
             if (!text)
                 text = '¡Atención miembros!';
             if (media) {
-                await sock.sendMessage(targetJid, media, { caption: text, mentions });
+                await sock.sendMessage(targetJid, {
+                    image: media.data ? Buffer.from(media.data, 'base64') : media,
+                    caption: text,
+                    mentions
+                });
             }
             else {
-                await sock.sendMessage(targetJid, text, { mentions });
+                await sock.sendMessage(targetJid, { text, mentions });
             }
+            await reactSuccess(sock, msg);
             logger.info(`Tagnoadmins ejecutado en grupo ${targetJid} - ${mentions.length} menciones (ghost tag)`);
         }
         catch (error) {
+            await reactError(sock, msg);
+            await reply(sock, msg, `${EMOJIS.ERROR} Error al mencionar miembros: ${error.message}`);
             logger.error('Error in tagnoadmins command:', error);
-            await sock.sendMessage(replyJid, formatError('Error al mencionar miembros'));
         }
     }
 };

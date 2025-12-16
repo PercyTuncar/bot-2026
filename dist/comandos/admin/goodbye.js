@@ -34,7 +34,7 @@ export default {
                     `on - Activa despedidas\n` +
                     `off - Desactiva despedidas\n` +
                     `set [mensaje] - Configura mensaje\n\n` +
-                    `Placeholders disponibles: {name}, {group}`);
+                    `Placeholders disponibles: {name}, {group}, {count}`);
             }
         }
         catch (error) {

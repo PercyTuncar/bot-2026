@@ -8,6 +8,7 @@ import MemberService from '../services/MemberService.js';
 import WelcomeService from '../services/WelcomeService.js';
 import ModerationService from '../services/ModerationService.js';
 import GroupRepository from '../repositories/GroupRepository.js';
+import MemberRepository from '../repositories/MemberRepository.js';
 import { normalizePhone, getUserId, normalizeGroupId, extractIdFromWid } from '../utils/phone.js';
 import logger from '../lib/logger.js';
 
@@ -677,7 +678,21 @@ export class EventHandler {
 
       if (member) {
         await MemberService.removeMember(groupId, phone);
-        await WelcomeService.sendGoodbye(this.sock, groupId, phone, member.displayName);
+
+        // Fetch updated member count
+        let count = 0;
+        try {
+          // Use metadata if available (most accurate)
+          const targetJid = groupId.includes('@') ? groupId : `${groupId}@g.us`;
+          const metadata = await this.sock.groupMetadata(targetJid);
+          count = metadata.participants.length;
+        } catch (e) {
+          // Fallback to DB count
+          const members = await MemberRepository.getActiveMembers(groupId);
+          count = members.length;
+        }
+
+        await WelcomeService.sendGoodbye(this.sock, groupId, phone, member.displayName, count);
       }
 
       logger.info(`👋 Member exit logged: ${phone} from group ${groupId}`);

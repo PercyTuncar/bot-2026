@@ -81,11 +81,15 @@ export class CommandDispatcher {
             }
         }
         let permissions = await PermissionManager.checkPermissions(userPhone, groupJid, sock);
+        logger.info(`🔐 Permissions: userPhone=${userPhone}, fromMe=${msg.fromMe}, level=${permissions.level} (${permissions.name})`);
         if (msg.fromMe) {
+            logger.info(`🔐 msg.fromMe=true → Forcing OWNER permissions`);
             permissions = { level: PERMISSION_LEVELS.OWNER, name: PERMISSION_NAMES[PERMISSION_LEVELS.OWNER] };
         }
         const requiredLevel = this.getPermissionLevel(command.permissions);
+        logger.info(`🔐 Required level: ${requiredLevel}, User level: ${permissions.level}`);
         if (permissions.level < requiredLevel) {
+            logger.warn(`🔐 Permission denied: ${permissions.level} < ${requiredLevel}`);
             await sock.sendMessage(replyJid, formatError('No tienes permisos para usar este comando'));
             return null;
         }
@@ -100,22 +104,26 @@ export class CommandDispatcher {
                     || group?.config?.messagesPerPoint
                     || group?.config?.points?.perMessages
                     || 10;
-                await sock.sendMessage(replyJid, `⚠️ Puntos insuficientes\n` +
-                    `Necesitas ${command.pointsRequired} puntos para usar este comando.\n` +
-                    `Actualmente tienes ${currentPoints} puntos.\n` +
-                    `Te faltan ${command.pointsRequired - currentPoints} puntos.\n` +
-                    `📈 Mantente activo en el grupo para acumular puntos.\n` +
-                    `Recibes 1 punto cada ${messagesPerPoint} mensajes.`);
+                await sock.sendMessage(replyJid, {
+                    text: `⚠️ Puntos insuficientes\n` +
+                        `Necesitas ${command.pointsRequired} puntos para usar este comando.\n` +
+                        `Actualmente tienes ${currentPoints} puntos.\n` +
+                        `Te faltan ${command.pointsRequired - currentPoints} puntos.\n` +
+                        `📈 Mantente activo en el grupo para acumular puntos.\n` +
+                        `Recibes 1 punto cada ${messagesPerPoint} mensajes.`
+                });
                 return null;
             }
         }
         if (command.purchaseRequired && isGroup && groupId) {
             const hasCommand = await PremiumHandler.userHasCommand(groupId, userPhone, command.name);
             if (!hasCommand && permissions.level < PERMISSION_LEVELS.GLOBAL_ADMIN) {
-                await sock.sendMessage(replyJid, `💰 *Comando Premium*\n\n` +
-                    `Este comando requiere ser comprado antes de usarlo.\n\n` +
-                    `📝 Usa: .buypremium ${command.name}\n` +
-                    `📊 Ver comandos disponibles: .premium`);
+                await sock.sendMessage(replyJid, {
+                    text: `💰 *Comando Premium*\n\n` +
+                        `Este comando requiere ser comprado antes de usarlo.\n\n` +
+                        `📝 Usa: .buypremium ${command.name}\n` +
+                        `📊 Ver comandos disponibles: .premium`
+                });
                 return null;
             }
             if (hasCommand) {
@@ -129,7 +137,7 @@ export class CommandDispatcher {
                 const elapsed = (Date.now() - lastUsed) / 1000;
                 if (elapsed < command.cooldown) {
                     const remaining = Math.ceil(command.cooldown - elapsed);
-                    await sock.sendMessage(replyJid, `⏳ Espera ${remaining} segundos antes de usar este comando nuevamente`);
+                    await sock.sendMessage(replyJid, { text: `⏳ Espera ${remaining} segundos antes de usar este comando nuevamente` });
                     return null;
                 }
             }

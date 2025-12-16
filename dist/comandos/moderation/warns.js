@@ -3,9 +3,9 @@ import MemberRepository from '../../repositories/MemberRepository.js';
 import ConfigService from '../../services/ConfigService.js';
 import { getTargetUser } from '../../utils/parser.js';
 import { normalizePhone } from '../../utils/phone.js';
-import { formatError } from '../../utils/formatter.js';
 import { EMOJIS } from '../../config/constants.js';
 import logger from '../../lib/logger.js';
+import { reply, reactLoading, reactSuccess, reactError } from '../../utils/reply.js';
 export default {
     name: 'warns',
     description: 'Ver advertencias de un usuario (menciona o responde a su mensaje)',
@@ -14,36 +14,41 @@ export default {
     scope: 'group',
     cooldown: 5,
     async execute({ sock, msg, groupId, userPhone, replyJid }) {
-        let chat = null;
         try {
-            chat = await msg.getChat();
-        }
-        catch (e) {
-            logger.warn(`[WARNS] Could not get chat: ${e.message}`);
-        }
-        const target = await getTargetUser(msg, chat);
-        let targetPhone;
-        let targetName;
-        let mentionJid;
-        if (target) {
-            targetPhone = target.isLid ? target.phone : (normalizePhone(target.phone) || target.phone);
-            targetName = target.name || targetPhone;
-            mentionJid = target.jid;
-            logger.info(`[WARNS] Target: phone=${targetPhone}, name=${targetName}, method=${target.method}, isLid=${target.isLid}`);
-        }
-        else {
-            targetPhone = normalizePhone(userPhone) || userPhone;
-            targetName = msg.pushName || targetPhone;
-            mentionJid = `${targetPhone}@s.whatsapp.net`;
-            logger.info(`[WARNS] No target specified, showing own warnings: ${targetPhone}`);
-        }
-        try {
+            await reactLoading(sock, msg);
+            let chat = null;
+            try {
+                chat = await msg.getChat();
+            }
+            catch (e) {
+                logger.warn(`[WARNS] Could not get chat: ${e.message}`);
+            }
+            const target = await getTargetUser(msg, chat);
+            let targetPhone;
+            let targetName;
+            let mentionJid;
+            if (target) {
+                targetPhone = target.isLid ? target.phone : (normalizePhone(target.phone) || target.phone);
+                targetName = target.name || targetPhone;
+                mentionJid = target.jid;
+                logger.info(`[WARNS] Target: phone=${targetPhone}, name=${targetName}, method=${target.method}, isLid=${target.isLid}`);
+            }
+            else {
+                targetPhone = normalizePhone(userPhone) || userPhone;
+                targetName = msg.pushName || targetPhone;
+                mentionJid = `${targetPhone}@s.whatsapp.net`;
+                logger.info(`[WARNS] No target specified, showing own warnings: ${targetPhone}`);
+            }
             const warnings = await WarningService.getWarnings(groupId, targetPhone);
             const found = await MemberRepository.findByPhoneOrLid(groupId, targetPhone, targetPhone);
             const member = found ? found.data : null;
             const displayName = member?.displayName || targetName;
             if (!warnings || warnings.total === 0) {
-                await sock.sendMessage(replyJid, `${EMOJIS.INFO} @${targetPhone} (${displayName}) no tiene advertencias`, { mentions: [mentionJid] });
+                await sock.sendMessage(replyJid, {
+                    text: `${EMOJIS.INFO} @${targetPhone} (${displayName}) no tiene advertencias`,
+                    mentions: [mentionJid]
+                });
+                await reactSuccess(sock, msg);
                 return;
             }
             const config = await ConfigService.getGroupConfig(groupId);
@@ -71,11 +76,13 @@ export default {
             else {
                 response += `🚫 Ha alcanzado el límite de advertencias y será expulsado.`;
             }
-            await sock.sendMessage(replyJid, response, { mentions: [mentionJid] });
+            await sock.sendMessage(replyJid, { text: response, mentions: [mentionJid] });
+            await reactSuccess(sock, msg);
         }
         catch (error) {
+            await reactError(sock, msg);
+            await reply(sock, msg, `${EMOJIS.ERROR} Error al obtener advertencias: ${error.message}`);
             logger.error('[WARNS] Error in warns command:', error);
-            await sock.sendMessage(replyJid, formatError('Error al obtener advertencias'));
         }
     }
 };

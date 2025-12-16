@@ -1,7 +1,7 @@
 import MemberRepository from '../../repositories/MemberRepository.js';
-import { formatError } from '../../utils/formatter.js';
 import { EMOJIS } from '../../config/constants.js';
 import logger from '../../lib/logger.js';
+import { reply, reactLoading, reactSuccess, reactError } from '../../utils/reply.js';
 export default {
     name: 'taginactive',
     description: 'Mencionar usuarios inactivos por X días',
@@ -11,11 +11,11 @@ export default {
     cooldown: 30,
     async execute({ sock, msg, args, groupId, replyJid }) {
         try {
-            await msg.react(EMOJIS.LOADING);
-            await sock.sendMessage(replyJid, `${EMOJIS.LOADING} Buscando usuarios inactivos...`);
+            await reactLoading(sock, msg);
             const days = parseInt(args[0]);
             if (isNaN(days) || days < 1) {
-                await sock.sendMessage(replyJid, formatError('Debes especificar un número válido de días\nEjemplo: .taginactive 7'));
+                await reactError(sock, msg);
+                await reply(sock, msg, `${EMOJIS.ERROR} Debes especificar un número válido de días\nEjemplo: .taginactive 7`);
                 return;
             }
             const members = await MemberRepository.getActiveMembers(groupId);
@@ -35,7 +35,8 @@ export default {
                 return (now - lastMessage) > daysInMs;
             });
             if (inactiveMembers.length === 0) {
-                await sock.sendMessage(replyJid, formatError(`No hay usuarios inactivos por más de ${days} días`));
+                await reactError(sock, msg);
+                await reply(sock, msg, `${EMOJIS.ERROR} No hay usuarios inactivos por más de ${days} días`);
                 return;
             }
             const mentions = inactiveMembers.slice(0, 100).map(m => m.phone + '@s.whatsapp.net');
@@ -47,14 +48,14 @@ export default {
                     text += '\n';
             });
             text += `\n\n${EMOJIS.INFO} Total: ${inactiveMembers.length} usuarios`;
-            await sock.sendMessage(replyJid, text, { mentions });
-            await msg.react(EMOJIS.SUCCESS);
+            await sock.sendMessage(replyJid, { text, mentions });
+            await reactSuccess(sock, msg);
             logger.info(`Taginactive ejecutado en grupo ${groupId} - ${inactiveMembers.length} inactivos`);
         }
         catch (error) {
+            await reactError(sock, msg);
+            await reply(sock, msg, `${EMOJIS.ERROR} Error al mencionar inactivos: ${error.message}`);
             logger.error('Error in taginactive command:', error);
-            await msg.react(EMOJIS.ERROR);
-            await sock.sendMessage(replyJid, formatError('Error al mencionar inactivos'));
         }
     }
 };

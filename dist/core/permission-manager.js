@@ -1,63 +1,63 @@
 import { config } from '../config/environment.js';
-import { normalizePhone } from '../utils/phone.js';
 import ConfigRepository from '../repositories/ConfigRepository.js';
 import { PERMISSION_LEVELS, PERMISSION_NAMES } from '../config/constants.js';
-import { extractParticipants } from '../utils/group.js';
-function extractPhoneFromLid(lid) {
-    if (!lid || !lid.includes('@lid'))
-        return lid;
-    return lid.split('@')[0];
+import logger from '../lib/logger.js';
+function cleanPhoneNumber(phone) {
+    if (!phone)
+        return '';
+    return phone
+        .replace('@s.whatsapp.net', '')
+        .replace('@c.us', '')
+        .replace('@lid', '')
+        .split(':')[0]
+        .replace(/\D/g, '');
 }
 export class PermissionManager {
     static async checkPermissions(userPhone, groupId, sock) {
-        const userId = userPhone;
-        if (sock?.info?.wid?.user) {
-            const botPhone = normalizePhone(sock.info.wid.user);
-            if (userId.includes('@lid')) {
-                const lidNumber = userId.split('@')[0];
-                if (lidNumber === botPhone) {
-                    return { level: PERMISSION_LEVELS.OWNER, name: PERMISSION_NAMES[PERMISSION_LEVELS.OWNER] };
-                }
-            }
-            else if (userId === botPhone) {
+        const cleanUserPhone = cleanPhoneNumber(userPhone);
+        logger.debug(`[Permissions] Checking for userPhone=${userPhone}, clean=${cleanUserPhone}, groupId=${groupId}`);
+        if (sock?.user?.id) {
+            const botJid = sock.user.id;
+            const botPhone = cleanPhoneNumber(botJid);
+            logger.debug(`[Permissions] Bot phone: ${botPhone}`);
+            if (cleanUserPhone === botPhone) {
+                logger.info(`[Permissions] ✅ User is bot itself → OWNER`);
                 return { level: PERMISSION_LEVELS.OWNER, name: PERMISSION_NAMES[PERMISSION_LEVELS.OWNER] };
             }
         }
         const globalConfig = await ConfigRepository.getGlobal();
-        const matchesOwner = userId.includes('@lid')
-            ? extractPhoneFromLid(userId) === globalConfig?.ownerPhone
-            : userId === globalConfig?.ownerPhone;
-        if (matchesOwner) {
+        const ownerPhone = cleanPhoneNumber(globalConfig?.ownerPhone || '');
+        logger.debug(`[Permissions] Owner phone from config: ${ownerPhone}`);
+        if (ownerPhone && cleanUserPhone === ownerPhone) {
+            logger.info(`[Permissions] ✅ User matches owner → OWNER`);
             return { level: PERMISSION_LEVELS.OWNER, name: PERMISSION_NAMES[PERMISSION_LEVELS.OWNER] };
         }
-        const adminPhones = globalConfig?.adminPhones || config.permissions.adminPhones || [];
-        const matchesAdmin = userId.includes('@lid')
-            ? adminPhones.includes(extractPhoneFromLid(userId))
-            : adminPhones.includes(userId);
-        if (matchesAdmin) {
+        const adminPhones = (globalConfig?.adminPhones || config.permissions.adminPhones || [])
+            .map(p => cleanPhoneNumber(p));
+        if (adminPhones.includes(cleanUserPhone)) {
+            logger.info(`[Permissions] ✅ User is global admin → GLOBAL_ADMIN`);
             return { level: PERMISSION_LEVELS.GLOBAL_ADMIN, name: PERMISSION_NAMES[PERMISSION_LEVELS.GLOBAL_ADMIN] };
         }
         if (groupId && sock) {
             try {
-                const targetJid = groupId.includes('@') ? groupId : `${groupId}@g.us`;
-                const chat = await sock.getChatById(targetJid);
-                if (!chat || !chat.isGroup) {
-                    return { level: PERMISSION_LEVELS.USER, name: PERMISSION_NAMES[PERMISSION_LEVELS.USER] };
-                }
-                const participant = extractParticipants(chat).find(p => {
-                    const participantPhone = normalizePhone(p?.id?._serialized || p?.id);
-                    if (userId.includes('@lid')) {
-                        return participantPhone === extractPhoneFromLid(userId);
+                const groupJid = groupId.includes('@') ? groupId : `${groupId}@g.us`;
+                const metadata = await sock.groupMetadata(groupJid);
+                if (metadata?.participants) {
+                    const participant = metadata.participants.find((p) => {
+                        const participantPhone = cleanPhoneNumber(p.id);
+                        return participantPhone === cleanUserPhone;
+                    });
+                    if (participant && (participant.admin === 'admin' || participant.admin === 'superadmin')) {
+                        logger.info(`[Permissions] ✅ User is group admin → GROUP_ADMIN`);
+                        return { level: PERMISSION_LEVELS.GROUP_ADMIN, name: PERMISSION_NAMES[PERMISSION_LEVELS.GROUP_ADMIN] };
                     }
-                    return participantPhone === userId;
-                });
-                if (participant && (participant.isAdmin || participant.isSuperAdmin)) {
-                    return { level: PERMISSION_LEVELS.GROUP_ADMIN, name: PERMISSION_NAMES[PERMISSION_LEVELS.GROUP_ADMIN] };
                 }
             }
             catch (error) {
+                logger.debug(`[Permissions] Error getting group metadata: ${error.message}`);
             }
         }
+        logger.debug(`[Permissions] User is regular → USER`);
         return { level: PERMISSION_LEVELS.USER, name: PERMISSION_NAMES[PERMISSION_LEVELS.USER] };
     }
     static async hasPermission(userPhone, requiredLevel, groupId, sock) {

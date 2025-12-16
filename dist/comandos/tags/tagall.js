@@ -1,6 +1,6 @@
-import { extractParticipants } from '../../utils/group.js';
-import { formatError } from '../../utils/formatter.js';
+import { EMOJIS } from '../../config/constants.js';
 import logger from '../../lib/logger.js';
+import { reply, reactLoading, reactSuccess, reactError } from '../../utils/reply.js';
 export default {
     name: 'tagall',
     description: 'Mencionar a todos los miembros del grupo',
@@ -10,14 +10,18 @@ export default {
     cooldown: 30,
     async execute({ sock, msg, args, groupId, groupJid, replyJid }) {
         try {
+            await reactLoading(sock, msg);
             const targetJid = groupJid || (groupId.includes('@') ? groupId : `${groupId}@g.us`);
-            const chat = await sock.getChatById(targetJid);
-            if (!chat || !chat.isGroup) {
-                await sock.sendMessage(replyJid, formatError('Este comando solo funciona en grupos'));
+            let metadata;
+            try {
+                metadata = await sock.groupMetadata(targetJid);
+            }
+            catch (e) {
+                await reactError(sock, msg);
+                await reply(sock, msg, `${EMOJIS.ERROR} Este comando solo funciona en grupos`);
                 return;
             }
-            const participants = extractParticipants(chat);
-            const mentions = participants.map(p => p?.id?._serialized || p?.id);
+            const mentions = metadata.participants.map(p => p.id);
             let text = args.join(' ');
             let media = null;
             if (msg.hasMedia) {
@@ -40,16 +44,22 @@ export default {
                     text = '¡Atención a todos!';
             }
             if (media) {
-                await sock.sendMessage(targetJid, media, { caption: text, mentions });
+                await sock.sendMessage(targetJid, {
+                    image: media.data ? Buffer.from(media.data, 'base64') : media,
+                    caption: text,
+                    mentions
+                });
             }
             else {
-                await sock.sendMessage(targetJid, text, { mentions });
+                await sock.sendMessage(targetJid, { text, mentions });
             }
+            await reactSuccess(sock, msg);
             logger.info(`Tagall ejecutado en grupo ${targetJid} - ${mentions.length} menciones`);
         }
         catch (error) {
+            await reactError(sock, msg);
+            await reply(sock, msg, `${EMOJIS.ERROR} Error al mencionar a todos: ${error.message}`);
             logger.error('Error in tagall command:', error);
-            await sock.sendMessage(replyJid, formatError('Error al mencionar a todos'));
         }
     }
 };

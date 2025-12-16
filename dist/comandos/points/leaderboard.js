@@ -3,6 +3,7 @@ import { formatNumber } from '../../utils/formatter.js';
 import { EMOJIS } from '../../config/constants.js';
 import logger from '../../lib/logger.js';
 import { bold, numberList, joinSections } from '../../utils/message-builder.js';
+import { reply, reactLoading, reactSuccess, reactError } from '../../utils/reply.js';
 export default {
     name: 'leaderboard',
     description: 'Top 10 usuarios con mas puntos',
@@ -10,8 +11,9 @@ export default {
     permissions: 'user',
     scope: 'group',
     cooldown: 10,
-    async execute({ msg, groupId }) {
+    async execute({ sock, msg, groupId }) {
         try {
+            await reactLoading(sock, msg);
             const [topMembers, allMembers] = await Promise.all([
                 MemberRepository.getByPoints(groupId, 10),
                 MemberRepository.getActiveMembers(groupId)
@@ -24,12 +26,14 @@ export default {
             const body = numberList(items);
             const footer = `\nTotal de participantes: ${allMembers.length}`;
             const response = joinSections([header, body]) + footer;
-            await msg.reply(response);
+            await reply(sock, msg, response);
+            await reactSuccess(sock, msg);
             logger.info('[LEADERBOARD] Mostrado en grupo ' + groupId);
         }
         catch (error) {
+            await reactError(sock, msg);
+            await reply(sock, msg, `${EMOJIS.ERROR} Error al obtener el leaderboard`);
             logger.error('[LEADERBOARD] Error:', error);
-            await msg.reply(EMOJIS.ERROR + ' Error al obtener el leaderboard');
         }
     }
 };
