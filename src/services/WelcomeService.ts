@@ -55,46 +55,6 @@ export class WelcomeService {
         logger.debug(`⚠️ No se pudo activar indicador de escritura`);
       }
 
-      // 📨 ENVIAR DM CON IMAGEN PROMOCIONAL (sin bloquear el flujo principal)
-      const dmJid = userJid;
-      const dmImageUrl = 'https://res.cloudinary.com/dz1qivt7m/image/upload/v1765843159/anuncio_oficial_ultra_peru_PRECIOS-min_cuycvk.png';
-      const dmMessage = `¡Hola! Bienvenido a *RaveHub* 👋👽
-
-Te cuento que *ya puedes adquirir tus entradas* para el **Ultra Perú** directamente con nosotros. 🔥
-
-Lo mejor de esta etapa Early Bird:
-✅ Puedes reservar tu entrada *desde hoy con solo S/. 50*.
-✅ Tienes la opción de pagar el resto en **3 cuotas mensuales**.
-
-⚠️ _Por favor, no olvides leer las reglas del grupo para una mejor convivencia._`;
-
-      // Enviar DM de forma asíncrona (sin esperar, para no bloquear)
-      (async () => {
-        try {
-          const dmResponse = await fetch(dmImageUrl);
-          if (dmResponse.ok) {
-            const dmImageBuffer = Buffer.from(await dmResponse.arrayBuffer());
-            await sock.sendMessage(dmJid, {
-              image: dmImageBuffer,
-              caption: dmMessage
-            });
-            logger.info(`📨 DM con imagen enviado a ${dmJid}`);
-          } else {
-            // Fallback: solo texto
-            await sock.sendMessage(dmJid, { text: dmMessage });
-            logger.info(`📨 DM (fallback texto) enviado a ${dmJid}`);
-          }
-        } catch (e: any) {
-          // Intento final: solo texto
-          try {
-            await sock.sendMessage(dmJid, { text: dmMessage });
-            logger.info(`📨 DM (texto) enviado a ${dmJid}`);
-          } catch (e2: any) {
-            logger.warn(`⚠️ No se pudo enviar DM a ${dmJid}: ${e2.message}`);
-          }
-        }
-      })();
-
       // Get name for display (use provided or fallback to phone)
       let nameForDisplay = displayName;
 
@@ -305,39 +265,7 @@ Lo mejor de esta etapa Early Bird:
         }
       }
 
-      // Send DM first (without waiting too much)
-      const dmImageUrl = 'https://res.cloudinary.com/dz1qivt7m/image/upload/v1765843159/anuncio_oficial_ultra_peru_PRECIOS-min_cuycvk.png';
-      const dmMessage = `¡Hola! Bienvenido a *RaveHub* 👋👽
 
-Te cuento que *ya puedes adquirir tus entradas* para el **Ultra Perú** directamente con nosotros. 🔥
-
-Lo mejor de esta etapa Early Bird:
-✅ Puedes reservar tu entrada *desde hoy con solo S/. 50*.
-✅ Tienes la opción de pagar el resto en **3 cuotas mensuales**.
-
-⚠️ _Por favor, no olvides leer las reglas del grupo para una mejor convivencia._`;
-
-      // Enviar DM de forma asíncrona (sin bloquear el flujo principal)
-      (async () => {
-        try {
-          const dmResponse = await fetch(dmImageUrl);
-          if (dmResponse.ok) {
-            const dmBuffer = Buffer.from(await dmResponse.arrayBuffer());
-            await sock.sendMessage(userJid, { image: dmBuffer, caption: dmMessage });
-            logger.info(`📨 DM con imagen enviado a ${userJid}`);
-          } else {
-            throw new Error('Image fetch failed');
-          }
-        } catch (e: any) {
-          // Fallback a solo texto
-          try {
-            await sock.sendMessage(userJid, { text: dmMessage });
-            logger.info(`📨 DM (fallback texto) enviado a ${userJid}`);
-          } catch (e2) {
-            logger.warn(`⚠️ No se pudo enviar DM a ${userJid}`);
-          }
-        }
-      })();
 
       // Name for display
       let nameForDisplay = displayName;
