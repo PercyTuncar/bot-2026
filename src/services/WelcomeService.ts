@@ -1,6 +1,5 @@
 import GroupRepository from '../repositories/GroupRepository.js';
 import MemberRepository from '../repositories/MemberRepository.js';
-import WelcomeImageService, { welcomeImageService } from './WelcomeImageService.js';
 import { replacePlaceholders } from '../utils/formatter.js';
 import { config as envConfig } from '../config/environment.js';
 import { normalizePhone, phoneToJid, getCanonicalId } from '../utils/phone.js';
@@ -51,9 +50,12 @@ export class WelcomeService {
       // Send typing indicator
       try {
         await sock.sendPresenceUpdate('composing', targetJid);
-      } catch (e) { }
+        logger.info(`⌨️ Indicador de escritura activado`);
+      } catch (e) {
+        logger.debug(`⚠️ No se pudo activar indicador de escritura`);
+      }
 
-      // Try to send DM with promotional image (optional)
+      // 📨 ENVIAR DM CON IMAGEN PROMOCIONAL (sin bloquear el flujo principal)
       const dmJid = userJid;
       const dmImageUrl = 'https://res.cloudinary.com/dz1qivt7m/image/upload/v1765843159/anuncio_oficial_ultra_peru_PRECIOS-min_cuycvk.png';
       const dmMessage = `¡Hola! Bienvenido a *RaveHub* 👋👽
@@ -66,35 +68,32 @@ Lo mejor de esta etapa Early Bird:
 
 ⚠️ _Por favor, no olvides leer las reglas del grupo para una mejor convivencia._`;
 
-      try {
-        // Download promotional image with timeout
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
-
-        const dmImageRes = await fetch(dmImageUrl, { signal: controller.signal });
-        clearTimeout(timeoutId);
-
-        if (dmImageRes.ok) {
-          const dmImageBuffer = Buffer.from(await dmImageRes.arrayBuffer());
-          await sock.sendMessage(dmJid, {
-            image: dmImageBuffer,
-            caption: dmMessage
-          });
-          logger.info(`📨 DM con imagen enviado a ${dmJid}`);
-        } else {
-          // Fallback: text only
-          await sock.sendMessage(dmJid, { text: dmMessage });
-          logger.info(`📨 DM (solo texto) enviado a ${dmJid}`);
-        }
-      } catch (e: any) {
-        // Try text-only if image fails
+      // Enviar DM de forma asíncrona (sin esperar, para no bloquear)
+      (async () => {
         try {
-          await sock.sendMessage(dmJid, { text: dmMessage });
-          logger.info(`📨 DM (fallback texto) enviado a ${dmJid}`);
-        } catch (e2: any) {
-          logger.warn(`⚠️ Error enviando DM a ${dmJid}: ${e2.message}`);
+          const dmResponse = await fetch(dmImageUrl);
+          if (dmResponse.ok) {
+            const dmImageBuffer = Buffer.from(await dmResponse.arrayBuffer());
+            await sock.sendMessage(dmJid, {
+              image: dmImageBuffer,
+              caption: dmMessage
+            });
+            logger.info(`📨 DM con imagen enviado a ${dmJid}`);
+          } else {
+            // Fallback: solo texto
+            await sock.sendMessage(dmJid, { text: dmMessage });
+            logger.info(`📨 DM (fallback texto) enviado a ${dmJid}`);
+          }
+        } catch (e: any) {
+          // Intento final: solo texto
+          try {
+            await sock.sendMessage(dmJid, { text: dmMessage });
+            logger.info(`📨 DM (texto) enviado a ${dmJid}`);
+          } catch (e2: any) {
+            logger.warn(`⚠️ No se pudo enviar DM a ${dmJid}: ${e2.message}`);
+          }
         }
-      }
+      })();
 
       // Get name for display (use provided or fallback to phone)
       let nameForDisplay = displayName;
@@ -111,21 +110,13 @@ Lo mejor de esta etapa Early Bird:
         nameForDisplay = cleanNumber;
       }
 
-      // Try to get profile picture with timeout
-      let profilePicUrl: string | null = null;
-      try {
-        profilePicUrl = await Promise.race([
-          sock.profilePictureUrl(userJid, 'image'),
-          new Promise<null>((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000))
-        ]);
-      } catch (e) {
-        // No profile pic available or timeout
-      }
-
-      // Stop typing
+      // Stop typing indicator before sending
       try {
         await sock.sendPresenceUpdate('paused', targetJid);
-      } catch (e) { }
+        logger.info(`⏸️ Indicador de escritura detenido`);
+      } catch (e) {
+        logger.debug(`⚠️ No se pudo detener indicador de escritura`);
+      }
 
       // Check config
       const groupConfig = await GroupRepository.getConfig(groupId);
@@ -157,28 +148,25 @@ Lo mejor de esta etapa Early Bird:
 
       logger.info(`👋 Welcome message: "${message.substring(0, 50)}...", mentions=[${mentions.join(', ')}]`);
 
-      // Generate welcome image
+      // 🖼️ IMAGEN DE BIENVENIDA (SOLO URL ESTÁTICA)
+      // Ya NO se generan imágenes con sharp. Solo se usa URL configurada.
       let imageBuffer: Buffer | null = null;
-      if (envConfig.features?.welcomeImages && groupConfig.features?.welcomeImages !== false) {
+      
+      if (groupConfig.welcome?.imageUrl) {
         try {
-          if (envConfig.cloudinary?.welcomeBgUrl) {
-            logger.info(`🖼️ Generating welcome image for ${nameForDisplay}`);
-
-            // Pass profile pic URL (or null for Multiavatar fallback)
-            imageBuffer = await welcomeImageService.createWelcomeImageWithPhoto(
-              cleanNumber,
-              nameForDisplay || cleanNumber,
-              profilePicUrl,
-              sock
-            );
-
-            if (imageBuffer) {
-              logger.info(`🖼️ Welcome image generated: ${imageBuffer.length} bytes`);
-            }
+          logger.info(`⬇️ Descargando imagen de bienvenida: ${groupConfig.welcome.imageUrl}`);
+          const res = await fetch(groupConfig.welcome.imageUrl);
+          if (res.ok) {
+            imageBuffer = Buffer.from(await res.arrayBuffer());
+            logger.info(`✅ Imagen descargada: ${imageBuffer.length} bytes`);
+          } else {
+            logger.warn(`⚠️ Error HTTP ${res.status} al descargar imagen`);
           }
         } catch (error: any) {
-          logger.error(`Error generating welcome image:`, error.message);
+          logger.error(`❌ Error descargando imagen:`, error.message);
         }
+      } else {
+        logger.info(`ℹ️ No hay imagen configurada, enviando solo texto`);
       }
 
       // Send message
@@ -318,7 +306,6 @@ Lo mejor de esta etapa Early Bird:
       }
 
       // Send DM first (without waiting too much)
-      // Send DM first (without waiting too much)
       const dmImageUrl = 'https://res.cloudinary.com/dz1qivt7m/image/upload/v1765843159/anuncio_oficial_ultra_peru_PRECIOS-min_cuycvk.png';
       const dmMessage = `¡Hola! Bienvenido a *RaveHub* 👋👽
 
@@ -330,22 +317,27 @@ Lo mejor de esta etapa Early Bird:
 
 ⚠️ _Por favor, no olvides leer las reglas del grupo para una mejor convivencia._`;
 
-      try {
-        // Fetch image
-        const dmResponse = await fetch(dmImageUrl);
-        if (dmResponse.ok) {
-          const dmBuffer = Buffer.from(await dmResponse.arrayBuffer());
-          await sock.sendMessage(userJid, { image: dmBuffer, caption: dmMessage });
-          logger.info(`📨 DM con imagen enviado a ${userJid}`);
-        } else {
-          throw new Error('Image fetch failed');
-        }
-      } catch (e: any) {
-        logger.warn(`⚠️ Error enviando DM con imagen (fallback a texto): ${e.message}`);
+      // Enviar DM de forma asíncrona (sin bloquear el flujo principal)
+      (async () => {
         try {
-          await sock.sendMessage(userJid, { text: dmMessage });
-        } catch (e2) { }
-      }
+          const dmResponse = await fetch(dmImageUrl);
+          if (dmResponse.ok) {
+            const dmBuffer = Buffer.from(await dmResponse.arrayBuffer());
+            await sock.sendMessage(userJid, { image: dmBuffer, caption: dmMessage });
+            logger.info(`📨 DM con imagen enviado a ${userJid}`);
+          } else {
+            throw new Error('Image fetch failed');
+          }
+        } catch (e: any) {
+          // Fallback a solo texto
+          try {
+            await sock.sendMessage(userJid, { text: dmMessage });
+            logger.info(`📨 DM (fallback texto) enviado a ${userJid}`);
+          } catch (e2) {
+            logger.warn(`⚠️ No se pudo enviar DM a ${userJid}`);
+          }
+        }
+      })();
 
       // Name for display
       let nameForDisplay = displayName;
