@@ -1,7 +1,7 @@
-
-import { formatSuccess, formatError } from '../../utils/formatter.js';
 import GroupRepository from '../../repositories/GroupRepository.js';
+import { EMOJIS } from '../../config/constants.js';
 import logger from '../../lib/logger.js';
+import { reply, reactLoading, reactSuccess, reactError } from '../../utils/reply.js';
 
 export default {
   name: 'antilink',
@@ -11,18 +11,20 @@ export default {
   scope: 'group',
   cooldown: 5,
 
-  async execute({ sock, args, groupId, replyJid }) {
-    const action = args[0]?.toLowerCase();
-    
-    if (!['on', 'off'].includes(action)) {
-      await sock.sendMessage(replyJid, formatError('Uso: .antilink on | off'));
-      return;
-    }
-
+  async execute({ sock, msg, args, groupId, replyJid }) {
     try {
+      await reactLoading(sock, msg);
+
+      const action = args[0]?.toLowerCase();
+
+      if (!['on', 'off'].includes(action)) {
+        await reactError(sock, msg);
+        await reply(sock, msg, `${EMOJIS.ERROR} Uso: .antilink on | off`);
+        return;
+      }
+
       const config: any = await GroupRepository.getConfig(groupId) || {};
-      
-      // Actualizar estructura de configuración
+
       const newConfig = {
         ...config,
         moderation: {
@@ -32,13 +34,13 @@ export default {
       };
 
       await GroupRepository.updateConfig(groupId, newConfig);
-      
-      await sock.sendMessage(replyJid, 
-        formatSuccess(`AntiLink ha sido ${action === 'on' ? 'ACTIVADO ✅' : 'DESACTIVADO ❌'}`)
-      );
-    } catch (error) {
+
+      await reply(sock, msg, `${EMOJIS.SUCCESS} AntiLink ha sido ${action === 'on' ? 'ACTIVADO ✅' : 'DESACTIVADO ❌'}`);
+      await reactSuccess(sock, msg);
+    } catch (error: any) {
+      await reactError(sock, msg);
+      await reply(sock, msg, `${EMOJIS.ERROR} Error al actualizar configuración: ${error.message}`);
       logger.error('[ANTILINK] Error:', error);
-      await sock.sendMessage(replyJid, formatError('Error al actualizar configuración'));
     }
   }
 };

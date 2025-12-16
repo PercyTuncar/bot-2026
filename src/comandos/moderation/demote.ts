@@ -1,8 +1,8 @@
-
 import { getTargetUser } from '../../utils/parser.js';
 import { normalizePhone } from '../../utils/phone.js';
-import { formatSuccess, formatError } from '../../utils/formatter.js';
+import { EMOJIS } from '../../config/constants.js';
 import logger from '../../lib/logger.js';
+import { reply, reactLoading, reactSuccess, reactError } from '../../utils/reply.js';
 
 export default {
   name: 'demote',
@@ -12,33 +12,40 @@ export default {
   scope: 'group',
   cooldown: 5,
 
-  async execute({ sock, msg, replyJid }) {
-    let chat = null;
+  async execute({ sock, msg, groupJid, groupId, replyJid }) {
     try {
-      chat = await msg.getChat();
-    } catch (e) {
-      logger.warn(`[DEMOTE] Could not get chat: ${e.message}`);
-    }
+      await reactLoading(sock, msg);
 
-    const target = await getTargetUser(msg, chat);
-    
-    if (!target) {
-      await sock.sendMessage(replyJid, formatError('Debes mencionar a un usuario'));
-      return;
-    }
+      let chat = null;
+      try {
+        chat = await msg.getChat();
+      } catch (e) {
+        logger.warn(`[DEMOTE] Could not get chat: ${e.message}`);
+      }
 
-    try {
+      const target = await getTargetUser(msg, chat);
+
+      if (!target) {
+        await reactError(sock, msg);
+        await reply(sock, msg, `${EMOJIS.ERROR} Debes mencionar a un usuario`);
+        return;
+      }
+
       const participantId = target.jid;
-      
-      await chat.demoteParticipants([participantId]);
-      
-      await sock.sendMessage(replyJid, 
-        formatSuccess(`✅ @${target.phone} ya no es administrador`),
-        { mentions: [participantId] }
-      );
-    } catch (error) {
+      const targetJid = groupJid || (groupId.includes('@') ? groupId : `${groupId}@g.us`);
+
+      // Baileys: usar groupParticipantsUpdate con 'demote'
+      await sock.groupParticipantsUpdate(targetJid, [participantId], 'demote');
+
+      await sock.sendMessage(replyJid, {
+        text: `✅ @${target.phone} ya no es administrador`,
+        mentions: [participantId]
+      });
+      await reactSuccess(sock, msg);
+    } catch (error: any) {
+      await reactError(sock, msg);
+      await reply(sock, msg, `${EMOJIS.ERROR} No se pudo quitar permisos al usuario: ${error.message}`);
       logger.error('[DEMOTE] Error:', error);
-      await sock.sendMessage(replyJid, formatError('No se pudo quitar permisos al usuario'));
     }
   }
 };

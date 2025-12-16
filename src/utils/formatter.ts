@@ -16,7 +16,7 @@ export function formatNumber(num: number): string {
  */
 export function formatDate(date: any): string {
   if (!date) return 'N/A';
-  
+
   const d = date.toDate ? date.toDate() : new Date(date);
   return new Intl.DateTimeFormat('es-AR', {
     day: '2-digit',
@@ -34,16 +34,16 @@ export function formatDate(date: any): string {
  */
 export function formatRelativeTime(date: any): string {
   if (!date) return 'N/A';
-  
+
   const d = date.toDate ? date.toDate() : new Date(date);
   const now = new Date();
   const diff = now.getTime() - d.getTime();
-  
+
   const seconds = Math.floor(diff / 1000);
   const minutes = Math.floor(seconds / 60);
   const hours = Math.floor(minutes / 60);
   const days = Math.floor(hours / 24);
-  
+
   if (days > 0) return `Hace ${days} día${days > 1 ? 's' : ''}`;
   if (hours > 0) return `Hace ${hours} hora${hours > 1 ? 's' : ''}`;
   if (minutes > 0) return `Hace ${minutes} minuto${minutes > 1 ? 's' : ''}`;
@@ -58,30 +58,30 @@ export function formatRelativeTime(date: any): string {
  */
 export function replacePlaceholders(text: string, data: Record<string, any>): string {
   let result = text;
-  
+
   for (const [key, value] of Object.entries(data)) {
     result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), String(value));
   }
-  
+
   return result;
 }
 
 /**
- * Formatea un mensaje de error
+ * Formatea un mensaje de error para Baileys
  * @param {string} message - Mensaje de error
- * @returns {string} - Mensaje formateado
+ * @returns {{ text: string }} - Objeto Baileys con mensaje formateado
  */
-export function formatError(message: string): string {
-  return `${EMOJIS.ERROR} ${message}`;
+export function formatError(message: string): { text: string } {
+  return { text: `${EMOJIS.ERROR} ${message}` };
 }
 
 /**
- * Formatea un mensaje de éxito
+ * Formatea un mensaje de éxito para Baileys
  * @param {string} message - Mensaje de éxito
- * @returns {string} - Mensaje formateado
+ * @returns {{ text: string }} - Objeto Baileys con mensaje formateado
  */
-export function formatSuccess(message: string): string {
-  return `${EMOJIS.SUCCESS} ${message}`;
+export function formatSuccess(message: string): { text: string } {
+  return { text: `${EMOJIS.SUCCESS} ${message}` };
 }
 
 export default {

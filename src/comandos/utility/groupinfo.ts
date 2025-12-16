@@ -2,9 +2,8 @@
 import { EMOJIS } from '../../config/constants.js';
 import ConfigService from '../../services/ConfigService.js';
 import { formatDate, formatRelativeTime, formatNumber } from '../../utils/formatter.js';
-import { formatError } from '../../utils/formatter.js';
 import { bold, section, bulletList, joinSections } from '../../utils/message-builder.js';
-import { reply } from '../../utils/reply.js';
+import { reply, reactLoading, reactSuccess, reactError } from '../../utils/reply.js';
 
 export default {
   name: 'groupinfo',
@@ -15,16 +14,20 @@ export default {
   cooldown: 10,
 
   async execute({ sock, args, replyJid, msg }) {
-    const groupId = args[0];
-    if (!groupId) {
-      await sock.sendMessage(replyJid, formatError('Debes especificar el ID del grupo'));
-      return;
-    }
-
     try {
+      await reactLoading(sock, msg);
+
+      const groupId = args[0];
+      if (!groupId) {
+        await reactError(sock, msg);
+        await reply(sock, msg, `${EMOJIS.ERROR} Debes especificar el ID del grupo`);
+        return;
+      }
+
       const info = await GroupService.getGroupInfo(groupId);
       if (!info) {
-        await sock.sendMessage(replyJid, formatError('Grupo no encontrado'));
+        await reactError(sock, msg);
+        await reply(sock, msg, `${EMOJIS.ERROR} Grupo no encontrado`);
         return;
       }
 
@@ -48,10 +51,10 @@ export default {
       const dates = info.activatedAt ? section('📅 Fechas', [`Activado: ${formatDate(info.activatedAt)}`]) : '';
 
       await reply(sock, msg, joinSections([header, general, members, messages, points, settings, dates]));
-    } catch (error) {
-      await sock.sendMessage(replyJid, formatError(`Error al obtener información: ${error.message}`));
+      await reactSuccess(sock, msg);
+    } catch (error: any) {
+      await reactError(sock, msg);
+      await reply(sock, msg, `${EMOJIS.ERROR} Error al obtener información: ${error.message}`);
     }
   }
 };
-
-

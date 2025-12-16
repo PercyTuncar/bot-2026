@@ -45,7 +45,7 @@ export class CommandDispatcher {
 
     // Usar userPhone ya resuelto desde event-handler (puede ser LID resuelto o fallback)
     let userPhone = resolvedUserPhone;
-    
+
     // Fallback solo si no vino resuelto
     if (!userPhone) {
       if (msg.fromMe) {
@@ -77,7 +77,7 @@ export class CommandDispatcher {
       // Excepción: Permitir activación remota con .bot on <id> en DM
       // Permitimos que el comando 'bot' se ejecute en DM para manejar su propia lógica de validación
       const isRemoteBotActivation = command.name === 'bot' && isDM;
-      
+
       if (!isRemoteBotActivation) {
         logger.warn(`⚠️ Comando ${command.name} requiere grupo pero se ejecutó en DM. msg.from="${msg.from}"`);
         await sock.sendMessage(replyJid, formatError('Este comando solo funciona en grupos'));
@@ -90,38 +90,45 @@ export class CommandDispatcher {
       await sock.sendMessage(replyJid, formatError('Este comando solo funciona en chat privado'));
       return null;
     }
-    
+
     // Permitir activación remota desde DM para el comando 'bot'
     // La validación anterior era demasiado estricta con el número de argumentos
     // Ahora aceptamos cualquier comando 'bot' en DM para que el propio comando maneje la validación
     const isRemoteBotActivation = command.name === 'bot' && isDM;
 
     if (isRemoteBotActivation) {
-        // Excepción: Permitir .bot on <id> en DM
-        // No verificamos GroupRepository.getById aquí porque el grupo se pasará como argumento
+      // Excepción: Permitir .bot on <id> en DM
+      // No verificamos GroupRepository.getById aquí porque el grupo se pasará como argumento
     } else {
-        const commandsWithoutActiveGroup = ['bot', 'createprize', 'deleteprize', 'ping', 'help', 'ranking', 'leaderboard'];
-        if (isGroup && groupId && !commandsWithoutActiveGroup.includes(command.name) && command.scope !== COMMAND_SCOPES.ANY) {
-          // CRITICAL: Verificar estado actual DIRECTO de BD (sin caché)
-          const group = await GroupRepository.getById(groupId);
-          if (!group || !group.isActive) {
-            await sock.sendMessage(replyJid, formatError('El bot no está activo en este grupo. Usa .bot on para activarlo'));
-            return null;
-          }
+      const commandsWithoutActiveGroup = ['bot', 'createprize', 'deleteprize', 'ping', 'help', 'ranking', 'leaderboard'];
+      if (isGroup && groupId && !commandsWithoutActiveGroup.includes(command.name) && command.scope !== COMMAND_SCOPES.ANY) {
+        // CRITICAL: Verificar estado actual DIRECTO de BD (sin caché)
+        const group = await GroupRepository.getById(groupId);
+        if (!group || !group.isActive) {
+          await sock.sendMessage(replyJid, formatError('El bot no está activo en este grupo. Usa .bot on para activarlo'));
+          return null;
         }
+      }
     }
 
     let permissions = await PermissionManager.checkPermissions(userPhone, groupJid, sock);
 
+    // Debug logging
+    logger.info(`🔐 Permissions: userPhone=${userPhone}, fromMe=${msg.fromMe}, level=${permissions.level} (${permissions.name})`);
+
     // FIX: If message is from the bot/owner's account (including LIDs), force OWNER permissions
     // This solves the issue where LIDs don't match the main phone number in config/admin list.
     if (msg.fromMe) {
+      logger.info(`🔐 msg.fromMe=true → Forcing OWNER permissions`);
       permissions = { level: PERMISSION_LEVELS.OWNER, name: PERMISSION_NAMES[PERMISSION_LEVELS.OWNER] };
     }
 
     const requiredLevel = this.getPermissionLevel(command.permissions);
 
+    logger.info(`🔐 Required level: ${requiredLevel}, User level: ${permissions.level}`);
+
     if (permissions.level < requiredLevel) {
+      logger.warn(`🔐 Permission denied: ${permissions.level} < ${requiredLevel}`);
       await sock.sendMessage(replyJid, formatError('No tienes permisos para usar este comando'));
       return null;
     }
@@ -133,19 +140,19 @@ export class CommandDispatcher {
         // Obtener messagesPerPoint del grupo
         const groupConfig = await GroupRepository.getConfig(groupId);
         const group = await GroupRepository.getById(groupId);
-        const messagesPerPoint = groupConfig?.messagesPerPoint 
-          || groupConfig?.points?.perMessages 
+        const messagesPerPoint = groupConfig?.messagesPerPoint
+          || groupConfig?.points?.perMessages
           || group?.config?.messagesPerPoint
           || group?.config?.points?.perMessages
           || 10;
-        await sock.sendMessage(replyJid,
-          `⚠️ Puntos insuficientes\n` +
-          `Necesitas ${command.pointsRequired} puntos para usar este comando.\n` +
-          `Actualmente tienes ${currentPoints} puntos.\n` +
-          `Te faltan ${command.pointsRequired - currentPoints} puntos.\n` +
-          `📈 Mantente activo en el grupo para acumular puntos.\n` +
-          `Recibes 1 punto cada ${messagesPerPoint} mensajes.`
-        );
+        await sock.sendMessage(replyJid, {
+          text: `⚠️ Puntos insuficientes\n` +
+            `Necesitas ${command.pointsRequired} puntos para usar este comando.\n` +
+            `Actualmente tienes ${currentPoints} puntos.\n` +
+            `Te faltan ${command.pointsRequired - currentPoints} puntos.\n` +
+            `📈 Mantente activo en el grupo para acumular puntos.\n` +
+            `Recibes 1 punto cada ${messagesPerPoint} mensajes.`
+        });
         return null;
       }
     }
@@ -155,12 +162,12 @@ export class CommandDispatcher {
     if (command.purchaseRequired && isGroup && groupId) {
       const hasCommand = await PremiumHandler.userHasCommand(groupId, userPhone, command.name);
       if (!hasCommand && permissions.level < PERMISSION_LEVELS.GLOBAL_ADMIN) {
-        await sock.sendMessage(replyJid,
-          `💰 *Comando Premium*\n\n` +
-          `Este comando requiere ser comprado antes de usarlo.\n\n` +
-          `📝 Usa: .buypremium ${command.name}\n` +
-          `📊 Ver comandos disponibles: .premium`
-        );
+        await sock.sendMessage(replyJid, {
+          text: `💰 *Comando Premium*\n\n` +
+            `Este comando requiere ser comprado antes de usarlo.\n\n` +
+            `📝 Usa: .buypremium ${command.name}\n` +
+            `📊 Ver comandos disponibles: .premium`
+        });
         return null;
       }
       // Registrar uso del comando premium
@@ -177,7 +184,7 @@ export class CommandDispatcher {
         const elapsed = (Date.now() - lastUsed) / 1000;
         if (elapsed < command.cooldown) {
           const remaining = Math.ceil(command.cooldown - elapsed);
-          await sock.sendMessage(replyJid, `⏳ Espera ${remaining} segundos antes de usar este comando nuevamente`);
+          await sock.sendMessage(replyJid, { text: `⏳ Espera ${remaining} segundos antes de usar este comando nuevamente` });
           return null;
         }
       }

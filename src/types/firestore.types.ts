@@ -9,7 +9,7 @@ export interface GroupConfig {
   messagesPerPoint?: number;
   pointsName?: string;
   pointsEnabled?: boolean;
-  
+
   // Configuración de puntos anidada (formato completo)
   points: {
     enabled: boolean;
@@ -43,6 +43,7 @@ export interface GroupConfig {
     enabled: boolean;
     message: string;
     withImage: boolean;
+    imageUrl?: string;
   };
   goodbye: {
     enabled: boolean;

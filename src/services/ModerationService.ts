@@ -83,7 +83,7 @@ export class ModerationService {
     const key = `${groupId}:${phone}`;
     const now = Date.now();
     const timestamps = this.messageTimestamps.get(key) || [];
-    
+
     const maxMessages = config.antiSpam.maxMessages || 5;
     const interval = (config.antiSpam.interval || 10) * 1000; // Convertir a ms
 
@@ -120,16 +120,20 @@ export class ModerationService {
   /**
    * Procesa una violación de moderación
    */
-  static async handleViolation(sock, msg, violation, groupId, userPhone) {
+  static async handleViolation(sock: any, msg: any, violation: any, groupId: string, userPhone: string) {
     // userPhone ya viene como userId válido (phone o LID) desde event-handler
-    const userId = userPhone;
+    const userId = userPhone.replace(/\D/g, ''); // Clean to digits only
 
     try {
       // Eliminar mensaje si la acción lo requiere
+      // NOTE: En Baileys, para eliminar mensajes se usa sendMessage con delete: true
       if (violation.action === 'delete' || violation.action === 'kick') {
         try {
-          await msg.delete(true); // true = eliminar para todos
-        } catch (error) {
+          // Baileys: delete message
+          if (msg.key) {
+            await sock.sendMessage(msg.key.remoteJid, { delete: msg.key });
+          }
+        } catch (error: any) {
           logger.warn(`No se pudo eliminar mensaje: ${error.message}`);
         }
       }
@@ -145,36 +149,39 @@ export class ModerationService {
           reason = `Spam detectado (${violation.count} mensajes muy rápido)`;
         }
 
-        const botInfo = sock.info;
-        const botPhone = normalizePhone(botInfo?.wid?.user);
+        // Baileys: use sock.user.id to get bot phone
+        const botPhone = sock.user?.id?.split(':')[0]?.split('@')[0]?.replace(/\D/g, '') || 'Sistema';
         const targetJid = groupId.includes('@') ? groupId : `${groupId}@g.us`;
+        const userJid = `${userId}@s.whatsapp.net`;
 
         await WarningService.addWarning(groupId, userId, botPhone, 'Sistema de Moderación', reason);
 
-        await sock.sendMessage(targetJid,
-          `⚠️ @${userId} ha recibido una advertencia automática\n\nMotivo: ${reason}`,
-          { mentions: [userId + '@s.whatsapp.net'] }
-        );
+        await sock.sendMessage(targetJid, {
+          text: `⚠️ @${userId} ha recibido una advertencia automática\n\nMotivo: ${reason}`,
+          mentions: [userJid]
+        });
       }
 
       // Expulsar si es necesario
       if (violation.action === 'kick') {
         try {
           const targetJid = groupId.includes('@') ? groupId : `${groupId}@g.us`;
-          const chat = await sock.getChatById(targetJid);
-          await chat.removeParticipants([userId + '@s.whatsapp.net']);
-          
-          await sock.sendMessage(targetJid,
-            `❌ @${userId} ha sido expulsado por moderación automática`,
-            { mentions: [userId + '@s.whatsapp.net'] }
-          );
-        } catch (error) {
+          const userJid = `${userId}@s.whatsapp.net`;
+
+          // Baileys: use groupParticipantsUpdate
+          await sock.groupParticipantsUpdate(targetJid, [userJid], 'remove');
+
+          await sock.sendMessage(targetJid, {
+            text: `❌ @${userId} ha sido expulsado por moderación automática`,
+            mentions: [userJid]
+          });
+        } catch (error: any) {
           logger.error(`Error al expulsar usuario: ${error.message}`);
         }
       }
 
       logger.info(`Violación de moderación procesada: ${violation.type} - Usuario: ${userId}`);
-    } catch (error) {
+    } catch (error: any) {
       logger.error('Error al procesar violación de moderación:', error);
     }
   }

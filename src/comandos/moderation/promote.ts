@@ -1,8 +1,8 @@
-
 import { getTargetUser } from '../../utils/parser.js';
 import { normalizePhone } from '../../utils/phone.js';
-import { formatSuccess, formatError } from '../../utils/formatter.js';
+import { EMOJIS } from '../../config/constants.js';
 import logger from '../../lib/logger.js';
+import { reply, reactLoading, reactSuccess, reactError } from '../../utils/reply.js';
 
 export default {
   name: 'promote',
@@ -12,34 +12,40 @@ export default {
   scope: 'group',
   cooldown: 5,
 
-  async execute({ sock, msg, replyJid }) {
-    let chat = null;
+  async execute({ sock, msg, groupJid, groupId, replyJid }) {
     try {
-      chat = await msg.getChat();
-    } catch (e) {
-      logger.warn(`[PROMOTE] Could not get chat: ${e.message}`);
-    }
+      await reactLoading(sock, msg);
 
-    const target = await getTargetUser(msg, chat);
-    
-    if (!target) {
-      await sock.sendMessage(replyJid, formatError('Debes mencionar a un usuario'));
-      return;
-    }
+      let chat = null;
+      try {
+        chat = await msg.getChat();
+      } catch (e) {
+        logger.warn(`[PROMOTE] Could not get chat: ${e.message}`);
+      }
 
-    try {
-      // Usar el JID correcto (LID o Phone) para la API
+      const target = await getTargetUser(msg, chat);
+
+      if (!target) {
+        await reactError(sock, msg);
+        await reply(sock, msg, `${EMOJIS.ERROR} Debes mencionar a un usuario`);
+        return;
+      }
+
       const participantId = target.jid;
-      
-      await chat.promoteParticipants([participantId]);
-      
-      await sock.sendMessage(replyJid, 
-        formatSuccess(`✅ @${target.phone} ha sido promovido a administrador`),
-        { mentions: [participantId] }
-      );
-    } catch (error) {
+      const targetJid = groupJid || (groupId.includes('@') ? groupId : `${groupId}@g.us`);
+
+      // Baileys: usar groupParticipantsUpdate con 'promote'
+      await sock.groupParticipantsUpdate(targetJid, [participantId], 'promote');
+
+      await sock.sendMessage(replyJid, {
+        text: `✅ @${target.phone} ha sido promovido a administrador`,
+        mentions: [participantId]
+      });
+      await reactSuccess(sock, msg);
+    } catch (error: any) {
+      await reactError(sock, msg);
+      await reply(sock, msg, `${EMOJIS.ERROR} No se pudo promover al usuario: ${error.message}`);
       logger.error('[PROMOTE] Error:', error);
-      await sock.sendMessage(replyJid, formatError('No se pudo promover al usuario'));
     }
   }
 };

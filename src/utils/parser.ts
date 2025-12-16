@@ -44,25 +44,21 @@ export function extractMentions(msg) {
   const mentions = [];
   const seen = new Set();
 
-  // 1. Try whatsapp-web.js list - PERO filtrar LIDs
+  // 1. Try whatsapp-web.js list - INCLUIR TODOS (phones y LIDs)
   if (msg.mentionedJidList && msg.mentionedJidList.length > 0) {
     for (const jid of msg.mentionedJidList) {
-      // CRÍTICO: Ignorar LIDs - solo aceptar @s.whatsapp.net o @c.us
-      if (jid.endsWith('@lid')) {
-        continue; // Saltar LIDs, no son números reales
-      }
-      const phone = jid.replace('@s.whatsapp.net', '').replace('@c.us', '');
-      // Validar que sea un número de teléfono real (8-14 dígitos)
-      // LIDs tienen típicamente 14-18+ dígitos
-      if (phone.length >= 8 && phone.length <= 14 && /^\d+$/.test(phone) && !seen.has(phone)) {
-        mentions.push(phone);
+      const isLid = jid.endsWith('@lid');
+      const phone = jid.replace('@s.whatsapp.net', '').replace('@c.us', '').replace('@lid', '').split(':')[0];
+
+      // Aceptar tanto phones (8-14 dígitos) como LIDs (14+ dígitos)
+      if (phone && /^\d+$/.test(phone) && !seen.has(phone)) {
+        mentions.push({ phone, jid, isLid });
         seen.add(phone);
       }
     }
   }
 
-  // 2. Fallback: Regex extraction from body - SOLO si no hay menciones válidas
-  // NOTA: Esto puede capturar LIDs renderizados en el texto, así que validamos longitud estrictamente
+  // 2. Fallback: Regex extraction from body
   if (mentions.length === 0) {
     const text = msg.body || '';
     const regex = /@(\d+)/g;
@@ -70,11 +66,10 @@ export function extractMentions(msg) {
 
     while ((match = regex.exec(text)) !== null) {
       const phone = match[1];
-      // Validación estricta: números de teléfono reales tienen 8-14 dígitos
-      // LIDs tienen típicamente 14-18+ dígitos (ej: 184980080701681 = 15 dígitos)
-      // Los números de teléfono más largos son ~14 dígitos (ej: +5493624692191)
-      if (phone.length >= 8 && phone.length <= 14 && !seen.has(phone)) {
-        mentions.push(phone);
+      if (!seen.has(phone)) {
+        // Determinar si parece LID por la longitud (14+ dígitos)
+        const isLid = phone.length >= 14;
+        mentions.push({ phone, jid: isLid ? `${phone}@lid` : `${phone}@s.whatsapp.net`, isLid });
         seen.add(phone);
       }
     }
@@ -90,7 +85,8 @@ export function extractMentions(msg) {
  */
 export function getFirstMention(msg) {
   const mentions = extractMentions(msg);
-  return mentions.length > 0 ? mentions[0] : null;
+  // extractMentions now returns objects {phone, jid, isLid}
+  return mentions.length > 0 ? mentions[0].phone : null;
 }
 
 /**
@@ -130,18 +126,18 @@ export async function getFirstMentionAsync(msg) {
  */
 export function extractContactInfo(contact, allowLid = false) {
   if (!contact) return null;
-  
+
   const rawId = contact.id?._serialized || contact.id || '';
   const isLid = rawId.endsWith('@lid');
-  
+
   // Obtener el número real - priorizar contact.number que es más confiable
   let phone = contact.number || '';
-  
+
   // Si no hay number, intentar con id.user SOLO si no es un LID
   if (!phone && contact.id?.user && !isLid) {
     phone = contact.id.user;
   }
-  
+
   // Si aún no hay phone y es un LID
   if (!phone && isLid) {
     if (allowLid) {
@@ -153,31 +149,31 @@ export function extractContactInfo(contact, allowLid = false) {
       return null;
     }
   }
-  
+
   // Si no es LID, podemos extraer del rawId
   if (!phone && !isLid) {
     phone = rawId.split('@')[0] || '';
   }
-  
+
   // Limpiar el phone de cualquier sufijo
   phone = phone.replace(/@.*$/, '');
-  
+
   // Validar que sea un número (puede ser número de teléfono o LID numérico)
   if (!phone || !/^\d+$/.test(phone)) {
     return null;
   }
-  
+
   // Si no es LID y no está en rango de teléfono válido, rechazar
   if (!isLid && (phone.length < 8 || phone.length > 14)) {
     return null;
   }
-  
+
   // Nombre para mostrar con cascada de prioridades
   const name = contact.pushname || contact.name || contact.shortName || phone || 'Usuario';
-  
+
   // Construir JID correcto
   const jid = isLid ? rawId : `${phone}@s.whatsapp.net`;
-  
+
   return {
     id: rawId,
     phone,
@@ -210,34 +206,34 @@ export async function getTargetUser(msg, chat = null) {
     try {
       const quotedMsg = await msg.getQuotedMessage();
       logger.info(`[getTargetUser] Strategy 1: Got quoted message`);
-      
+
       if (quotedMsg) {
         // NUEVO: Extraer información directamente del quotedMsg sin usar getContact()
         // porque getContact() puede fallar con errores de WhatsApp Web Store
         const quotedAuthor = quotedMsg.author || quotedMsg.from || quotedMsg._data?.author || quotedMsg._data?.from;
         const quotedParticipant = quotedMsg._data?.participant || quotedMsg._data?.id?.participant;
         const authorId = quotedAuthor || quotedParticipant;
-        
+
         logger.info(`[getTargetUser] Strategy 1: quotedAuthor=${quotedAuthor}, quotedParticipant=${quotedParticipant}, authorId=${authorId}`);
-        
+
         if (authorId) {
           const isLid = authorId.includes('@lid');
           let phone = '';
           let jid = authorId;
-          
+
           if (isLid) {
             // Es un LID - extraer la parte numérica
             const lidNumber = authorId.replace('@lid', '').split(':')[0];
             phone = lidNumber;
             jid = authorId;
             logger.info(`[getTargetUser] Strategy 1: Detected LID - lidNumber=${lidNumber}`);
-            
+
             // Intentar buscar en participantes del grupo para obtener más info
             let displayName = quotedMsg._data?.notifyName || quotedMsg.pushName || lidNumber;
-            
+
             if (chat && chat.isGroup && chat.participants) {
-              const participant = chat.participants.find(p => 
-                p.id._serialized === authorId || 
+              const participant = chat.participants.find(p =>
+                p.id._serialized === authorId ||
                 p.id._serialized?.includes(lidNumber)
               );
               if (participant) {
@@ -249,7 +245,7 @@ export async function getTargetUser(msg, chat = null) {
                 }
               }
             }
-            
+
             return {
               contact: null,
               phone: phone,
@@ -263,7 +259,7 @@ export async function getTargetUser(msg, chat = null) {
             phone = authorId.replace('@s.whatsapp.net', '').replace('@c.us', '').replace('@g.us', '');
             jid = `${phone}@s.whatsapp.net`;
             const displayName = quotedMsg._data?.notifyName || quotedMsg.pushName || phone;
-            
+
             // Validar que sea un número válido
             if (phone && /^\d{8,15}$/.test(phone)) {
               logger.info(`[getTargetUser] Strategy 1: Found normal number: ${phone}`);
@@ -278,13 +274,13 @@ export async function getTargetUser(msg, chat = null) {
             }
           }
         }
-        
+
         // Fallback: Intentar con getContact() si lo anterior no funcionó
         try {
           targetContact = await quotedMsg.getContact();
           logger.info(`[getTargetUser] Strategy 1 fallback: Contact - id=${targetContact?.id?._serialized}, number=${targetContact?.number}, pushname=${targetContact?.pushname}`);
           method = 'quoted';
-          
+
           const info = extractContactInfo(targetContact);
           logger.info(`[getTargetUser] Strategy 1 fallback: extractContactInfo result=${JSON.stringify(info)}`);
           if (info && info.phone) {
@@ -337,98 +333,81 @@ export async function getTargetUser(msg, chat = null) {
   // ESTRATEGIA 3: Si hay LID en mentionedJidList, buscar en participantes del grupo
   const mentionedJids = msg.mentionedIds || msg._data?.mentionedJidList || [];
   logger.info(`[getTargetUser] Strategy 3: mentionedJids=${JSON.stringify(mentionedJids)}`);
-  
+
   if (mentionedJids.length > 0) {
-    const mentionedLid = mentionedJids[0]; // Primer LID mencionado
+    const mentionedLid = mentionedJids[0]; // Primer JID mencionado (puede ser LID o phone)
     logger.info(`[getTargetUser] Strategy 3: Processing mentionedLid=${mentionedLid}`);
-    
-    // Obtener el chat para buscar participantes
+
+    // Extraer número del JID
+    const lidNumber = mentionedLid.replace('@lid', '').replace('@s.whatsapp.net', '').split(':')[0];
+    const isLid = mentionedLid.includes('@lid') || lidNumber.length >= 14;
+
+    // Intentar obtener más info del chat si está disponible
     try {
       const chatObj = chat || await msg.getChat();
       logger.info(`[getTargetUser] Strategy 3: Got chat, isGroup=${chatObj?.isGroup}`);
-      
-      if (chatObj && chatObj.isGroup && chatObj.participants) {
+
+      // Solo intentar buscar en participantes si tenemos acceso completo
+      if (chatObj && chatObj.participants && chatObj.participants.length > 0) {
         logger.info(`[getTargetUser] Strategy 3: Searching in ${chatObj.participants.length} participants`);
-        
-        // Buscar el participante que coincida con el LID mencionado
+
         for (const participant of chatObj.participants) {
           const participantId = participant.id?._serialized || participant.id;
-          
-          // Si el participante tiene el mismo LID que el mencionado
+
           if (participantId === mentionedLid) {
-            // Intentar obtener el contacto completo
             try {
               const contact = await chatObj.client?.getContactById(participantId);
-              if (contact) {
-                logger.info(`[getTargetUser] Strategy 3: Found contact for LID - number=${contact.number}, pushname=${contact.pushname}`);
-                
-                // Si el contacto tiene número real
-                if (contact.number) {
-                  const phone = contact.number.replace(/\D/g, '');
-                  if (phone.length >= 8 && phone.length <= 14) {
-                    return {
-                      contact: contact,
-                      phone: phone,
-                      name: contact.pushname || contact.name || phone,
-                      jid: `${phone}@s.whatsapp.net`,
-                      method: 'lid_resolved',
-                      isLid: true
-                    };
-                  }
+              if (contact && contact.number) {
+                const phone = contact.number.replace(/\D/g, '');
+                if (phone.length >= 8 && phone.length <= 14) {
+                  logger.info(`[getTargetUser] Strategy 3: Resolved LID to real phone: ${phone}`);
+                  return {
+                    contact: contact,
+                    phone: phone,
+                    name: contact.pushname || contact.name || phone,
+                    jid: `${phone}@s.whatsapp.net`,
+                    method: 'lid_resolved',
+                    isLid: true
+                  };
                 }
               }
             } catch (contactErr) {
-              logger.error(`[getTargetUser] Strategy 3: Error getting contact: ${contactErr.message}`);
+              logger.debug(`[getTargetUser] Strategy 3: getContactById failed: ${contactErr.message}`);
             }
           }
         }
-        
-        // Si no encontramos el número, al menos devolver el LID para que el comando pueda trabajar con él
-        // Esto permite que el bot use el LID directamente si está configurado para eso
-        const lidNumber = mentionedLid.replace('@lid', '').replace('@s.whatsapp.net', '');
-        logger.info(`[getTargetUser] Strategy 3: Returning LID as fallback: ${lidNumber}`);
-        return {
-          contact: null,
-          phone: lidNumber,
-          name: lidNumber,
-          jid: mentionedLid,
-          method: 'lid_direct',
-          isLid: true
-        };
       }
     } catch (chatErr) {
-      logger.error(`[getTargetUser] Strategy 3: Error getting chat: ${chatErr.message}`);
-      
-      // Fallback: devolver el LID directamente
-      const lidNumber = mentionedLid.replace('@lid', '').replace('@s.whatsapp.net', '');
-      logger.info(`[getTargetUser] Strategy 3 fallback: Returning LID directly: ${lidNumber}`);
-      return {
-        contact: null,
-        phone: lidNumber,
-        name: lidNumber,
-        jid: mentionedLid,
-        method: 'lid_fallback',
-        isLid: true
-      };
+      logger.debug(`[getTargetUser] Strategy 3: Chat access failed: ${chatErr.message}`);
     }
+
+    // FALLBACK PRINCIPAL: Devolver el JID mencionado directamente
+    // Esto funciona tanto para LIDs como para phones normales
+    logger.info(`[getTargetUser] Strategy 3: Using JID directly: number=${lidNumber}, isLid=${isLid}`);
+    return {
+      contact: null,
+      phone: lidNumber,
+      name: lidNumber,
+      jid: mentionedLid,
+      method: 'jid_direct',
+      isLid: isLid
+    };
   }
 
-  // ESTRATEGIA 4: Fallback - extraer del texto del mensaje (SOLO números válidos)
+  // ESTRATEGIA 4: Fallback - extraer del texto del mensaje (acepta LIDs ahora)
   logger.info(`[getTargetUser] Strategy 4: Trying text extraction`);
   const textMentions = extractMentions(msg);
   logger.info(`[getTargetUser] Strategy 4: extractMentions returned ${JSON.stringify(textMentions)}`);
   if (textMentions.length > 0) {
-    const phone = textMentions[0];
-    // Doble validación: el número debe ser válido (8-14 dígitos)
-    // Números más largos son probablemente LIDs
-    if (phone && phone.length >= 8 && phone.length <= 14 && /^\d+$/.test(phone)) {
+    const mention = textMentions[0]; // Now an object {phone, jid, isLid}
+    if (mention && mention.phone) {
       return {
         contact: null,
-        phone: phone,
-        name: phone,
-        jid: `${phone}@s.whatsapp.net`,
+        phone: mention.phone,
+        name: mention.phone,
+        jid: mention.jid,
         method: 'text',
-        isLid: false
+        isLid: mention.isLid
       };
     }
   }
@@ -436,13 +415,13 @@ export async function getTargetUser(msg, chat = null) {
   return null;
 }
 
-export default { 
-  parseCommand, 
-  extractMentions, 
-  getFirstMention, 
-  getMentionsAsync, 
-  getFirstMentionAsync, 
+export default {
+  parseCommand,
+  extractMentions,
+  getFirstMention,
+  getMentionsAsync,
+  getFirstMentionAsync,
   extractContactInfo,
-  getTargetUser 
+  getTargetUser
 };
 

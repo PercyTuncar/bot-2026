@@ -8,3 +8,18 @@ temp/
 firebase-credentials.json
 .DS_Store
 
+# Baileys
+baileys_auth/
+baileys_contacts_store.json
+
+# PM2 & Logs
+pm2_logs.txt
+pm2_qr.txt
+pm2_qr_v2.txt
+pm2_qr_v3.txt
+
+# Typescript output
+dist/
+
+# System
+Thumbs.db

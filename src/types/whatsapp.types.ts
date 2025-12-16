@@ -1,13 +1,22 @@
 /**
- * WhatsApp Web.js Type Definitions
+ * WhatsApp Type Definitions (Baileys Compatible)
+ * Migrated from whatsapp-web.js to @whiskeysockets/baileys
  */
 
+import { WASocket, proto, GroupMetadata, GroupParticipant, Contact } from '@whiskeysockets/baileys';
+
+// Re-export Baileys types
+export type { WASocket, proto, GroupMetadata, GroupParticipant, Contact };
+
+// Compatible message interface (used by existing commands)
 export interface WAMessage {
   id: {
     id: string;
     _serialized: string;
     fromMe?: boolean;
   };
+  key?: proto.IMessageKey;
+  message?: proto.IMessage;
   from: string;
   to: string;
   author?: string;
@@ -16,6 +25,7 @@ export interface WAMessage {
   timestamp: number;
   hasMedia: boolean;
   fromMe: boolean;
+  pushName?: string;
   isForwarded?: boolean;
   isStarred?: boolean;
   hasQuotedMsg?: boolean;
@@ -23,109 +33,87 @@ export interface WAMessage {
   _data?: {
     quotedMsg?: {
       id: string;
+      participant?: string;
+      message?: proto.IMessage;
     };
     participant?: string;
     from?: string;
+    pushName?: string;
   };
-  message?: {
-    conversation?: string;
-    extendedTextMessage?: {
-      text: string;
-    };
-  };
+
+  // Methods provided by EventHandler compatibility layer
   react?: (emoji: string) => Promise<void>;
   delete?: (forEveryone: boolean) => Promise<void>;
+  getChat?: () => Promise<any>;
+  getQuotedMessage?: () => Promise<any>;
+  getContact?: () => Promise<any>;
 }
 
 export interface WAContact {
   id: {
     _serialized: string;
     user: string;
-    server: string;
+    server?: string;
   };
   number: string;
   pushname?: string;
   name?: string;
   shortName?: string;
-  isMe: boolean;
-  isUser: boolean;
-  isGroup: boolean;
-  isWAContact: boolean;
-  isMyContact: boolean;
-  isBlocked: boolean;
+  isMe?: boolean;
+  isUser?: boolean;
+  isGroup?: boolean;
+  isWAContact?: boolean;
+  isMyContact?: boolean;
+  isBlocked?: boolean;
   profilePicUrl?: string;
 }
 
 export interface WAGroupParticipant {
-  id: {
-    _serialized: string;
-    user: string;
-    server: string;
-  };
-  isAdmin: boolean;
-  isSuperAdmin: boolean;
+  id: string;
+  admin?: 'admin' | 'superadmin' | null;
+  isAdmin?: boolean;
+  isSuperAdmin?: boolean;
   notify?: string;
   name?: string;
 }
 
 export interface WAGroupChat {
-  id: {
-    _serialized: string;
-    user: string;
-    server: string;
-  };
-  name: string;
+  id: string;
+  subject: string;
+  name?: string;
   isGroup: boolean;
-  isReadOnly: boolean;
+  isReadOnly?: boolean;
   announce?: boolean;
   restrict?: boolean;
   participants: WAGroupParticipant[];
-  owner?: {
-    _serialized: string;
-  };
-  createdAt?: number;
-  timestamp?: number;
-  description?: string;
-  inviteCode?: string;
-  groupMetadata?: {
-    id: string;
-    subject: string;
-    desc?: string;
-    participants: WAGroupParticipant[];
-  };
-  getChatById?: (id: string) => Promise<WAGroupChat>;
-  removeParticipants?: (participants: string[]) => Promise<void>;
+  owner?: string;
+  creation?: number;
+  desc?: string;
+  descId?: string;
+  size?: number;
 }
 
 export interface WAClient {
-  info: {
-    wid: {
-      user: string;
-      _serialized: string;
-    };
-    pushname: string;
-    platform: string;
+  user?: {
+    id: string;
+    name?: string;
   };
-  on: (event: string, callback: (...args: any[]) => void) => void;
-  sendMessage: (to: string, content: string, options?: any) => Promise<any>;
-  getContactById: (id: string) => Promise<WAContact>;
-  getChatById: (id: string) => Promise<WAGroupChat>;
-  getChats: () => Promise<WAGroupChat[]>;
-  destroy: () => Promise<void>;
+  sendMessage: (jid: string, content: any) => Promise<any>;
+  groupMetadata: (jid: string) => Promise<GroupMetadata>;
+  groupParticipantsUpdate: (jid: string, participants: string[], action: 'add' | 'remove' | 'promote' | 'demote') => Promise<any>;
+  profilePictureUrl: (jid: string, type?: 'image' | 'preview') => Promise<string | undefined>;
+  sendPresenceUpdate: (type: 'composing' | 'paused' | 'recording', jid: string) => Promise<void>;
+  onWhatsApp: (...jids: string[]) => Promise<{ exists: boolean; jid: string; name?: string }[]>;
 }
 
 export interface WAGroupParticipantsUpdate {
-  id: {
-    _serialized: string;
-  };
+  id: string;
   participants: string[];
   action: 'add' | 'remove' | 'promote' | 'demote';
 }
 
 export interface WAGroupUpdate {
-  id: {
-    _serialized: string;
-  };
+  id: string;
   subject?: string;
   desc?: string;
   announce?: boolean;

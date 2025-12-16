@@ -3,8 +3,8 @@ import GroupRepository from '../../repositories/GroupRepository.js';
 import { normalizePhone } from '../../utils/phone.js';
 import { getFirstMention } from '../../utils/parser.js';
 import { calculateLevel, getLevelProgress } from '../../utils/levels.js';
-import { formatSuccess, formatError } from '../../utils/formatter.js';
 import { EMOJIS } from '../../config/constants.js';
+import { reply, reactLoading, reactSuccess, reactError } from '../../utils/reply.js';
 
 export default {
   name: 'profile',
@@ -16,6 +16,8 @@ export default {
 
   async execute({ sock, msg, groupId, userPhone, replyJid }) {
     try {
+      await reactLoading(sock, msg);
+
       const mentionedPhone = getFirstMention(msg);
       const targetPhone = mentionedPhone ? normalizePhone(mentionedPhone) : normalizePhone(userPhone);
 
@@ -23,7 +25,8 @@ export default {
       const member = found ? found.data : null;
 
       if (!member) {
-        await sock.sendMessage(replyJid, formatError('Usuario no encontrado'));
+        await reactError(sock, msg);
+        await reply(sock, msg, `${EMOJIS.ERROR} Usuario no encontrado`);
         return;
       }
 
@@ -57,10 +60,11 @@ export default {
         message += `Premios canjeados: ${member.stats.totalRewardsRedeemed || 0}\n`;
       }
 
-      await sock.sendMessage(replyJid, formatSuccess(message));
-    } catch (error) {
-      console.error('Error in profile command:', error);
-      await sock.sendMessage(replyJid, formatError('Error al obtener perfil'));
+      await reply(sock, msg, message);
+      await reactSuccess(sock, msg);
+    } catch (error: any) {
+      await reactError(sock, msg);
+      await reply(sock, msg, `${EMOJIS.ERROR} Error al obtener perfil`);
     }
   }
 };

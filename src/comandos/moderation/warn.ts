@@ -3,9 +3,9 @@ import MemberRepository from '../../repositories/MemberRepository.js';
 import MemberService from '../../services/MemberService.js';
 import { getTargetUser } from '../../utils/parser.js';
 import { normalizePhone } from '../../utils/phone.js';
-import { formatSuccess, formatError } from '../../utils/formatter.js';
 import { EMOJIS } from '../../config/constants.js';
 import logger from '../../lib/logger.js';
+import { reply, reactLoading, reactSuccess, reactError } from '../../utils/reply.js';
 
 export default {
   name: 'warn',
@@ -16,60 +16,57 @@ export default {
   cooldown: 5,
 
   async execute({ sock, msg, args, groupId, groupJid, userPhone, replyJid }) {
-    // Obtener el chat para pasar a getTargetUser (necesario para resolver LIDs)
-    let chat = null;
     try {
-      chat = await msg.getChat();
-    } catch (e) {
-      logger.warn(`[WARN] Could not get chat: ${e.message}`);
-    }
+      await reactLoading(sock, msg);
 
-    // Usar getTargetUser que soporta quoted message, menciones y LIDs
-    const target = await getTargetUser(msg, chat);
-
-    if (!target) {
-      await sock.sendMessage(replyJid, formatError(
-        'Debes mencionar a un usuario (@usuario) o responder a su mensaje con .warn'
-      ));
-      return;
-    }
-
-    // Si es un LID, usar el LID directamente como identificador
-    const targetPhone = target.isLid ? target.phone : (normalizePhone(target.phone) || target.phone);
-    const normalizedAdmin = normalizePhone(userPhone) || userPhone;
-    const targetName = target.name || targetPhone;
-    const mentionJid = target.jid;
-
-    logger.info(`[WARN] Target: phone=${targetPhone}, name=${targetName}, method=${target.method}, isLid=${target.isLid}, jid=${mentionJid}`);
-
-    // No comparar si uno es LID y otro no (evitar auto-warn)
-    if (!target.isLid && targetPhone === normalizedAdmin) {
-      await sock.sendMessage(replyJid, formatError('No puedes advertirte a ti mismo'));
-      return;
-    }
-
-    // Verificar si el target es admin (no se puede advertir admins)
-    if (chat && chat.isGroup) {
+      let chat = null;
       try {
-        const participant = chat.participants?.find(p =>
-          p.id._serialized === mentionJid ||
-          p.id._serialized === `${targetPhone}@c.us` ||
-          p.id._serialized === `${targetPhone}@lid`
-        );
-        if (participant?.isAdmin) {
-          await sock.sendMessage(replyJid, formatError('🛡️ No puedes advertir a un administrador'));
-          return;
-        }
+        chat = await msg.getChat();
       } catch (e) {
-        logger.warn(`[WARN] Could not check admin status: ${e.message}`);
+        logger.warn(`[WARN] Could not get chat: ${e.message}`);
       }
-    }
 
-    const reason = args.slice(1).join(' ') || 'Sin motivo especificado';
-    const adminName = msg.pushName || normalizedAdmin;
+      const target = await getTargetUser(msg, chat);
 
-    try {
-      // Agregar advertencia (el servicio auto-registra si no existe)
+      if (!target) {
+        await reactError(sock, msg);
+        await reply(sock, msg, `${EMOJIS.ERROR} Debes mencionar a un usuario (@usuario) o responder a su mensaje con .warn`);
+        return;
+      }
+
+      const targetPhone = target.isLid ? target.phone : (normalizePhone(target.phone) || target.phone);
+      const normalizedAdmin = normalizePhone(userPhone) || userPhone;
+      const targetName = target.name || targetPhone;
+      const mentionJid = target.jid;
+
+      logger.info(`[WARN] Target: phone=${targetPhone}, name=${targetName}, method=${target.method}, isLid=${target.isLid}, jid=${mentionJid}`);
+
+      if (!target.isLid && targetPhone === normalizedAdmin) {
+        await reactError(sock, msg);
+        await reply(sock, msg, `${EMOJIS.ERROR} No puedes advertirte a ti mismo`);
+        return;
+      }
+
+      if (chat && chat.isGroup) {
+        try {
+          const participant = chat.participants?.find(p =>
+            p.id._serialized === mentionJid ||
+            p.id._serialized === `${targetPhone}@c.us` ||
+            p.id._serialized === `${targetPhone}@lid`
+          );
+          if (participant?.isAdmin) {
+            await reactError(sock, msg);
+            await reply(sock, msg, `${EMOJIS.ERROR} 🛡️ No puedes advertir a un administrador`);
+            return;
+          }
+        } catch (e) {
+          logger.warn(`[WARN] Could not check admin status: ${e.message}`);
+        }
+      }
+
+      const reason = args.slice(1).join(' ') || 'Sin motivo especificado';
+      const adminName = msg.pushName || normalizedAdmin;
+
       const result = await WarningService.addWarning(
         groupId,
         targetPhone,
@@ -78,11 +75,14 @@ export default {
         reason
       );
 
-      // Enviar mensaje de advertencia con diseño mejorado
       const progressBar = '⚠️'.repeat(result.warnings) + '▫️'.repeat(result.maxWarnings - result.warnings);
 
+      // Construir mención correcta (igual que en welcome)
+      const mentionText = `@${target.phone}`;
+      const mentionJidForMessage = target.isLid ? `${target.phone}@lid` : `${target.phone}@s.whatsapp.net`;
+
       let warnMessage = `\n\n⚠️ *ADVERTENCIA REGISTRADA* ⚠️\n\n`;
-      warnMessage += `👤 *Usuario:* @${target.phone}\n`;
+      warnMessage += `👤 *Usuario:* ${mentionText}\n`;
       warnMessage += `📛 *Nombre:* ${targetName}\n\n`;
       warnMessage += `━━━━━━━━━━━━━━━━━━━━\n`;
       warnMessage += `📄 *Motivo:*\n`;
@@ -95,55 +95,46 @@ export default {
         warnMessage += `\n⚡ _¡Próxima advertencia = expulsión!_`;
       }
 
-      await sock.sendMessage(replyJid, warnMessage, { mentions: [mentionJid] });
+      await sock.sendMessage(replyJid, { text: warnMessage, mentions: [mentionJidForMessage] });
+      await reactSuccess(sock, msg);
 
-      // Auto-kick si alcanzó el límite de advertencias
       if (result.shouldKick) {
         logger.info(`[WARN] User ${targetPhone} reached warning limit. Executing kick...`);
 
         const targetJid = groupJid || (groupId.includes('@') ? groupId : `${groupId}@g.us`);
         let kicked = false;
         try {
-          const chatForKick = await sock.getChatById(targetJid);
-          let kickId = mentionJid;
-          try {
-            const participantMatch = chatForKick.participants?.find(p => {
-              const pid = p?.id?._serialized || p?.id;
-              return pid === mentionJid || pid === `${targetPhone}@c.us` || pid === `${targetPhone}@lid`;
-            });
-            kickId = participantMatch?.id?._serialized || participantMatch?.id || mentionJid;
-          } catch { }
-          await chatForKick.removeParticipants([kickId]);
+          const kickId = mentionJid.includes('@') ? mentionJid : `${targetPhone}@s.whatsapp.net`;
+          await sock.groupParticipantsUpdate(targetJid, [kickId], 'remove');
           kicked = true;
-          logger.info(`[WARN] removeParticipants succeeded for ${kickId}`);
+          logger.info(`[WARN] groupParticipantsUpdate succeeded for ${kickId}`);
         } catch (kickError) {
           logger.error(`[WARN] Error removing participant ${targetPhone}:`, kickError);
         }
+
         try {
           await WarningService.logKick(groupId, targetPhone, 'Límite de advertencias alcanzado');
         } catch (logErr) {
           logger.error(`[WARN] Error logging kick for ${targetPhone}:`, logErr);
         }
+
         if (kicked) {
           try {
-            await sock.sendMessage(
-              targetJid,
-              `🚫 @${target.phone} (${targetName}) ha sido *expulsado* por acumular ${result.maxWarnings} advertencias.`,
-              { mentions: [mentionJid] }
-            );
-          } catch (notifyErr) {
+            await sock.sendMessage(targetJid, {
+              text: `🚫 @${target.phone} (${targetName}) ha sido *expulsado* por acumular ${result.maxWarnings} advertencias.`,
+              mentions: [mentionJid]
+            });
+          } catch (notifyErr: any) {
             logger.warn(`[WARN] Kick notification failed: ${notifyErr?.message || notifyErr}`);
           }
         } else {
-          await sock.sendMessage(
-            replyJid,
-            formatError(`No se pudo expulsar al usuario. Verifica que el bot sea administrador del grupo.`)
-          );
+          await reply(sock, msg, `${EMOJIS.ERROR} No se pudo expulsar al usuario. Verifica que el bot sea administrador del grupo.`);
         }
       }
-    } catch (error) {
+    } catch (error: any) {
+      await reactError(sock, msg);
+      await reply(sock, msg, `${EMOJIS.ERROR} Error al agregar advertencia: ${error.message || 'Error desconocido'}`);
       logger.error('[WARN] Error in warn command:', error);
-      await sock.sendMessage(replyJid, formatError('Error al agregar advertencia: ' + (error.message || 'Error desconocido')));
     }
   }
 };

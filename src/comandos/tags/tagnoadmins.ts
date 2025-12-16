@@ -1,8 +1,8 @@
 import { extractParticipants } from '../../utils/group.js';
 import { normalizePhone } from '../../utils/phone.js';
-import { formatError } from '../../utils/formatter.js';
 import { EMOJIS } from '../../config/constants.js';
 import logger from '../../lib/logger.js';
+import { reply, reactLoading, reactSuccess, reactError } from '../../utils/reply.js';
 
 export default {
   name: 'tagnoadmins',
@@ -14,23 +14,30 @@ export default {
 
   async execute({ sock, msg, args, groupId, groupJid, replyJid }) {
     try {
+      await reactLoading(sock, msg);
+
       const targetJid = groupJid || (groupId.includes('@') ? groupId : `${groupId}@g.us`);
-      const chat = await sock.getChatById(targetJid);
-      if (!chat || !chat.isGroup) {
-        await sock.sendMessage(replyJid, formatError('Este comando solo funciona en grupos'));
+
+      // Baileys: usar groupMetadata en lugar de getChatById
+      let metadata;
+      try {
+        metadata = await sock.groupMetadata(targetJid);
+      } catch (e) {
+        await reactError(sock, msg);
+        await reply(sock, msg, `${EMOJIS.ERROR} Este comando solo funciona en grupos`);
         return;
       }
 
-      const participants = extractParticipants(chat);
-      const nonAdmins = participants.filter(p => !p?.isAdmin && !p?.isSuperAdmin);
-      
+      const nonAdmins = metadata.participants.filter(p => !p.admin);
+
       if (nonAdmins.length === 0) {
-        await sock.sendMessage(replyJid, formatError('No se encontraron miembros no-administradores'));
+        await reactError(sock, msg);
+        await reply(sock, msg, `${EMOJIS.ERROR} No se encontraron miembros no-administradores`);
         return;
       }
 
       // Limitar a 100 menciones
-      const mentions = nonAdmins.slice(0, 100).map(p => p?.id?._serialized || p?.id);
+      const mentions = nonAdmins.slice(0, 100).map(p => p.id);
 
       // Construir texto preservando saltos de línea y formato del mensaje original
       const body = msg.body || '';
@@ -43,7 +50,7 @@ export default {
         text = args.join(' ');
       }
 
-      // Manejo robusto de media (descarga puede fallar dependiendo del tipo de mensaje)
+      // Manejo robusto de media
       let media = null;
       try {
         if (msg.hasMedia) {
@@ -52,7 +59,7 @@ export default {
       } catch (e) {
         logger.warn('tagnoadmins: downloadMedia() falló en msg', e);
       }
-      
+
       if (!media && msg.hasQuotedMsg) {
         try {
           const quoted = await msg.getQuotedMessage();
@@ -66,20 +73,26 @@ export default {
           logger.warn('tagnoadmins: manejo de mensaje citado falló', e);
         }
       }
-      
+
       if (!text) text = '¡Atención miembros!';
 
-      // Enviar mensaje con menciones fantasmas (sin lista visible)
+      // Enviar mensaje con menciones
       if (media) {
-        await sock.sendMessage(targetJid, media, { caption: text, mentions });
+        await sock.sendMessage(targetJid, {
+          image: media.data ? Buffer.from(media.data, 'base64') : media,
+          caption: text,
+          mentions
+        });
       } else {
-        await sock.sendMessage(targetJid, text, { mentions });
+        await sock.sendMessage(targetJid, { text, mentions });
       }
-      
+
+      await reactSuccess(sock, msg);
       logger.info(`Tagnoadmins ejecutado en grupo ${targetJid} - ${mentions.length} menciones (ghost tag)`);
-    } catch (error) {
+    } catch (error: any) {
+      await reactError(sock, msg);
+      await reply(sock, msg, `${EMOJIS.ERROR} Error al mencionar miembros: ${error.message}`);
       logger.error('Error in tagnoadmins command:', error);
-      await sock.sendMessage(replyJid, formatError('Error al mencionar miembros'));
     }
   }
 };

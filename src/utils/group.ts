@@ -196,55 +196,115 @@ export function buildGroupMetadata(chat, fallbackId) {
   return buildGroupMetadataFromChat(chat, fallbackId);
 }
 
-export async function fetchGroupChat(sock, groupId, msg) {
+/**
+ * Fetch group chat metadata using Baileys
+ * @param sock - Baileys socket
+ * @param groupId - Group ID (with or without @g.us)
+ * @param msg - Optional message object (for fallback getChat method)
+ * @returns Group metadata compatible object
+ */
+export async function fetchGroupChat(sock: any, groupId: string, msg?: any) {
   if (!sock) {
     throw new Error('Cliente de WhatsApp no inicializado.');
   }
 
-  let chat;
-  let lastError;
+  const targetJid = groupId.includes('@') ? groupId : `${groupId}@g.us`;
+  let metadata: any = null;
+  let lastError: any = null;
 
-  if (typeof sock.getChatById === 'function') {
+  // Strategy 1: Use Baileys groupMetadata (primary method)
+  if (typeof sock.groupMetadata === 'function') {
     try {
-      const targetJid = groupId.includes('@') ? groupId : `${groupId}@g.us`;
-      chat = await sock.getChatById(targetJid);
-    } catch (error) {
+      metadata = await sock.groupMetadata(targetJid);
+      if (metadata) {
+        // Return in a compatible format
+        return {
+          id: metadata.id,
+          isGroup: true,
+          name: metadata.subject,
+          description: metadata.desc || '',
+          owner: metadata.owner,
+          participants: metadata.participants || [],
+          groupMetadata: metadata
+        };
+      }
+    } catch (error: any) {
       lastError = error;
-      logger.warn(`[group-utils] getChatById fallo para ${groupId}: ${error.message}`);
+      logger.warn(`[group-utils] groupMetadata falló para ${groupId}: ${error.message}`);
     }
   }
 
-  if (!chat && typeof msg?.getChat === 'function') {
+  // Strategy 2: Fallback to msg.getChat if available
+  if (!metadata && typeof msg?.getChat === 'function') {
     try {
-      const currentChat = await msg.getChat();
-      if (currentChat?.isGroup) {
-        chat = currentChat;
+      const chat = await msg.getChat();
+      if (chat) {
+        return {
+          id: chat.id,
+          isGroup: true,
+          name: chat.subject || chat.name,
+          description: chat.desc || chat.description || '',
+          owner: chat.owner,
+          participants: chat.participants || [],
+          groupMetadata: chat
+        };
       }
-    } catch (error) {
-      logger.warn(`[group-utils] msg.getChat() fallo: ${error.message}`);
+    } catch (error: any) {
+      logger.warn(`[group-utils] msg.getChat() falló: ${error.message}`);
       if (!lastError) {
         lastError = error;
       }
     }
   }
 
-  if (!chat) {
+  if (!metadata) {
     if (lastError) {
       throw lastError;
     }
     throw new Error('El chat no es un grupo o no se pudo encontrar.');
   }
 
-  if (!chat.isGroup) {
-    throw new Error('El chat no es un grupo o no se pudo encontrar.');
-  }
-
-  return chat;
+  return metadata;
 }
 
-export async function resolveGroupMetadata(sock, groupId, msg) {
+/**
+ * Resolve complete group metadata using Baileys
+ */
+export async function resolveGroupMetadata(sock: any, groupId: string, msg?: any) {
+  const targetJid = groupId.includes('@') ? groupId : `${groupId}@g.us`;
+
+  // Try Baileys groupMetadata first
+  if (typeof sock.groupMetadata === 'function') {
+    try {
+      const metadata = await sock.groupMetadata(targetJid);
+      if (metadata) {
+        // Format participants for compatibility
+        const formattedParticipants = (metadata.participants || []).map((p: any) => ({
+          id: p.id,
+          normalizedId: normalizePhone(p.id),
+          admin: p.admin || null,
+          isAdmin: p.admin === 'admin' || p.admin === 'superadmin',
+          name: null // Name not available in group metadata
+        }));
+
+        return {
+          id: metadata.id.replace('@g.us', ''),
+          canonicalJid: metadata.id,
+          rawId: groupId,
+          subject: metadata.subject || 'Sin nombre',
+          desc: metadata.desc || '',
+          owner: metadata.owner || null,
+          participants: formattedParticipants
+        };
+      }
+    } catch (error: any) {
+      logger.warn(`[group-utils] resolveGroupMetadata error: ${error.message}`);
+    }
+  }
+
+  // Fallback to fetchGroupChat
   const chat = await fetchGroupChat(sock, groupId, msg);
-  return buildGroupMetadataFromChat(chat, chat.id?._serialized || groupId);
+  return buildGroupMetadataFromChat(chat, chat.id || groupId);
 }
 
 export function findParticipantByPhone(chat, phone) {

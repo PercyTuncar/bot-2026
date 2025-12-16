@@ -49,47 +49,46 @@ export function normalizePhone(phone: string | any): string {
 }
 
 /**
- * Convierte cualquier ID (LID o c.us) al formato estándar de teléfono (@c.us)
- * @param client - Cliente de WhatsApp (necesario para resolver LIDs)
- * @param rawId - El ID recibido (ej: "12345@lid" o "51999@c.us")
- * @returns El ID estandarizado (ej: "51999@c.us") o el mismo ID si no se pudo resolver
+ * Convierte cualquier ID al formato estándar de teléfono (@s.whatsapp.net)
+ * @param client - Cliente de WhatsApp (Baileys socket)
+ * @param rawId - El ID recibido (ej: "12345@lid" o "51999@s.whatsapp.net")
+ * @returns El ID estandarizado (ej: "51999@s.whatsapp.net") o el mismo ID si no se pudo resolver
  */
 export async function getCanonicalId(client: any, rawId: string): Promise<string> {
-    if (!rawId) return '';
-    
-    // Si ya es c.us o s.whatsapp.net, devolverlo directamente (optimización)
-    if (rawId.endsWith('@c.us') || rawId.endsWith('@s.whatsapp.net')) return rawId;
-    
-    // Si no es un LID, intentar normalizarlo
-    if (!rawId.includes('@lid')) {
-        const normalized = normalizePhone(rawId);
-        return normalized ? `${normalized}@c.us` : rawId;
+  if (!rawId) return '';
+
+  // Normalize to @s.whatsapp.net (Baileys standard)
+  if (rawId.endsWith('@c.us')) {
+    rawId = rawId.replace('@c.us', '@s.whatsapp.net');
+  }
+
+  // Si ya es s.whatsapp.net, devolverlo directamente
+  if (rawId.endsWith('@s.whatsapp.net')) return rawId;
+
+  // Si no es un LID, intentar normalizarlo
+  if (!rawId.includes('@lid')) {
+    const normalized = normalizePhone(rawId);
+    return normalized ? `${normalized}@s.whatsapp.net` : rawId;
+  }
+
+  try {
+    // For Baileys: use onWhatsApp to check if number exists
+    if (!client || !client.onWhatsApp) return rawId;
+
+    // Extract numeric part from LID
+    const numericPart = rawId.split('@')[0].replace(/[^\d]/g, '');
+    if (numericPart.length >= 8) {
+      const result = await client.onWhatsApp(numericPart);
+      if (result && result[0] && result[0].exists) {
+        return result[0].jid;
+      }
     }
 
-    try {
-        // Pedimos a Puppeteer que busque el contacto interno
-        // Usamos el cliente para resolver el LID
-        if (!client) return rawId;
-        
-        const contact = await client.getContactById(rawId);
-        
-        // Si el contacto tiene número, construimos el c.us
-        if (contact && contact.number) {
-            return `${contact.number}@c.us`;
-        }
-        
-        // Fallback: Si falla, intentar buscar en la propiedad id._serialized
-        if (contact && contact.id && contact.id._serialized && !contact.id._serialized.includes('@lid')) {
-            return contact.id._serialized;
-        }
-
-        // Si es un LID y no pudimos resolverlo (caso raro de privacidad extrema), 
-        // devolvemos el rawId pero logueamos advertencia.
-        return rawId;  
-    } catch (error) {
-        // console.error("Error normalizando ID:", error);
-        return rawId;
-    }
+    // Si es un LID y no pudimos resolverlo, devolvemos el rawId
+    return rawId;
+  } catch (error) {
+    return rawId;
+  }
 }
 
 /**
@@ -167,12 +166,12 @@ export function phoneToJid(phone: string): string {
   if (!phone) return '';
   // Si ya es un LID, retornarlo tal cual
   if (phone.includes('@lid')) return phone;
-  
+
   const normalized = normalizePhone(phone);
   // Si normalizePhone falló pero el input parece válido (no vacío), retornar input + suffix por seguridad,
   // pero idealmente normalizePhone debería haber funcionado.
   if (!normalized && phone) return `${phone}@s.whatsapp.net`;
-  
+
   return `${normalized}@s.whatsapp.net`;
 }
 
@@ -409,13 +408,13 @@ export function getDisplayNameFromMessage(msg: WAMessage, fallbackPhone: string 
   return fallbackPhone || 'Usuario';
 }
 
-export default { 
-  normalizePhone, 
-  normalizeGroupId, 
-  phoneToJid, 
-  groupIdToJid, 
-  formatPhone, 
-  getUserPhoneFromMessage, 
+export default {
+  normalizePhone,
+  normalizeGroupId,
+  phoneToJid,
+  groupIdToJid,
+  formatPhone,
+  getUserPhoneFromMessage,
   getUserId,
   getDisplayNameFromMessage,
   extractIdFromWid,

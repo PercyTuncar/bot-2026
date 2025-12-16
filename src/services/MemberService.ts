@@ -49,11 +49,25 @@ export class MemberService {
     // Extraer phone real (será el docId único)
     let finalPhone = phone;
 
-    // Si tenemos LID pero no phone, extraer números del LID primero
+    // Si tenemos LID pero no phone, intentar resolverlo (Último recurso)
     if (!finalPhone && lid) {
-      // Extraer solo números del LID: "91401836589109@lid" -> "91401836589109"
-      finalPhone = lid.split('@')[0].replace(/[^\d]/g, '');
-      logger.info(`📞 Extracted phone from LID: ${finalPhone}`);
+      // INTENTO DE RESOLUCIÓN FINAL
+      if (sock && (sock as any).signalRepository?.lidMapping) {
+        try {
+          const lidMap = (sock as any).signalRepository.lidMapping;
+          const pnJid = await lidMap.getPNForLID(lid);
+          if (pnJid) {
+            finalPhone = pnJid.split('@')[0].split(':')[0];
+            logger.info(`🔄 [MemberService] Final LID resolution: ${lid} -> ${finalPhone}`);
+          }
+        } catch (e) { }
+      }
+
+      // Si aún no hay phone, usamos el LID como fallback (sin asumir que es teléfono)
+      if (!finalPhone) {
+        finalPhone = lid.split('@')[0];
+        logger.warn(`⚠️ Created member with LID as phone (Resolution failed): ${finalPhone}`);
+      }
     }
 
     // Validar que tenemos un phone válido
@@ -63,16 +77,9 @@ export class MemberService {
     }
 
     // Intentar obtener Contact de WhatsApp para metadatos completos
+    // Note: En Baileys no existe getContactById, usamos datos del mensaje
     let contact = null;
-    if (sock) {
-      try {
-        const jid = lid || (finalPhone + '@c.us');
-        contact = await sock.getContactById(jid);
-        logger.debug(`📞 Contact fetched for ${finalPhone}`);
-      } catch (err) {
-        logger.debug(`Could not fetch contact for ${finalPhone}:`, err.message);
-      }
-    }
+    // Contact info is extracted from message pushName or groupMetadata
 
     // Crear participant object simulado si tenemos messageMetadata
     const participant = {
@@ -115,28 +122,22 @@ export class MemberService {
     try {
       logger.info(`[${new Date().toISOString()}] [BATCH WRITE] Syncing ${chat.participants.length} members for group ${groupId}`);
 
-      const memberPromises = chat.participants.map(async (participant) => {
+      const memberPromises = chat.participants.map(async (participant: any) => {
         const phone = normalizePhone(participant.id._serialized);
 
         // normalizePhone retorna '' para LIDs, solo valida si phone está vacío
-        // NUNCA comparar phone === groupId porque normalizePhone rechaza LIDs
         if (!phone) {
           return null;
         }
 
-        // Validar que phone no sea igual a groupId (solo números vs números)
+        // Validar que phone no sea igual a groupId
         if (phone === groupId) {
           return null;
         }
 
         try {
-          // Obtener Contact completo para extraer todos los metadatos
-          let contact = null;
-          try {
-            contact = await sock.getContactById(participant.id._serialized);
-          } catch (err) {
-            logger.warn(`Could not fetch contact for ${phone}`, err);
-          }
+          // En Baileys, usamos datos del participant directamente
+          const contact = null; // Contact info extracted from participant
 
           const memberData = await this.extractCompleteMemberMetadata(
             participant,
